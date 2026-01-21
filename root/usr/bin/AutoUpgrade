@@ -8,6 +8,35 @@ DOWNLOAD_PATH="/tmp/Downloads"
 tmpfirmware_version="/tmp/firmware_version"
 tmpapi_version="/tmp/api_version"
 
+generate_openwrt_update() {
+    local github_link=$(uci -q get autoupdate.@login[0].github)
+    local github_proxy=$(uci -q get autoupdate.@login[0].github_proxy)
+    local release_download=$(uci -q get autoupdate.@login[0].release_download)
+    local source=$(uci -q get autoupdate.@login[0].source)
+    local luci_edition=$(uci -q get autoupdate.@login[0].luci_edition)
+    local firmware_version=$(uci -q get autoupdate.@login[0].firmware_version)
+    local target_board=$(uci -q get autoupdate.@login[0].target_board)
+    local device_model=$(uci -q get autoupdate.@login[0].device_model)
+    local firmware_suffix=$(uci -q get autoupdate.@login[0].firmware_suffix)
+
+    if [ -n "$github_link" ]; then
+        cat > /etc/openwrt_update << EOF
+GITHUB_LINK="${github_link}"
+GITHUB_PROXY="${github_proxy:-https://ghproxy.com}"
+RELEASE_DOWNLOAD="${release_download:-releases/download}"
+SOURCE="${source:-openwrt}"
+LUCI_EDITION="${luci_edition:-luci}"
+FIRMWARE_VERSION="${firmware_version:-1.0.0}"
+TARGET_BOARD="${target_board:-x86}"
+DEVICE_MODEL="${device_model:-generic}"
+FIRMWARE_SUFFIX="${firmware_suffix:-.img.gz}"
+EOF
+        chmod 755 /etc/openwrt_update
+    fi
+}
+
+generate_openwrt_update
+
 # TIME 函数，用于输出带颜色的信息
 TIME() {
     case $1 in
@@ -31,10 +60,8 @@ TIME() {
 }
 
 function Remote_githuburl() {
-    # 清理临时版本文件
     rm -rf /tmp/*_version
 
-    # 检查 openwrt_update 文件是否存在且包含必要信息
     if [ -f "/etc/openwrt_update" ] && \
        grep -qE "GITHUB_LINK" "/etc/openwrt_update" && \
        grep -qE "RELEASE_DOWNLOAD" "/etc/openwrt_update"; then
@@ -66,9 +93,9 @@ function Remote_githuburl() {
             case "$response" in
                 [Yy])
                     if [ "$new_repo" != "$current_repo" ]; then
-                        sed -i "s#GITHUB_LINK=.*#GITHUB_LINK=\"$new_repo\"#" /etc/openwrt_update
                         uci set autoupdate.@login[0].github="$new_repo"
                         uci commit autoupdate
+                        generate_openwrt_update
                         source /etc/openwrt_update
                         TIME g "仓库链接已更新"
                     else
@@ -77,7 +104,7 @@ function Remote_githuburl() {
                     return 0
                     ;;
                 [Qq])
-                    break  # 跳出内层循环，进入外层循环的下一次迭代
+                    break
                     ;;
                 [Nn])
                     TIME r "退出程序"
@@ -92,16 +119,13 @@ function Remote_githuburl() {
 
 # 远程检测函数，检查必要文件和获取 API 数据
 Remote_detection() {
-    # 尝试使用 wget 下载 API 数据
     TIME y "获取API数据中..."
     RELEASE_DOWNLOAD1="${GITHUB_PROXY}/${RELEASE_DOWNLOAD}"
     RELEASE_DOWNLOAD2="${RELEASE_DOWNLOAD}"
     if ! wget -q --show-progress --no-check-certificate --timeout=40 -t 1 "$RELEASE_DOWNLOAD1/zzz_api" -O "$tmpapi_version"; then
-        # 若 wget 失败，使用 uclient-fetch 下载
         uclient-fetch --no-check-certificate --timeout=40 "$RELEASE_DOWNLOAD2/zzz_api" -O "$tmpapi_version"
     fi
 
-    # 检查 API 数据是否包含有效信息
     if ! grep -E "assets" "$tmpapi_version" >/dev/null 2>&1; then
         ASSETS="$(echo "$GITHUB_LINK" |cut -d"/" -f4-5)"
         TIME r "获取API数据失败,$ASSETS地址是否正确?，或此地址没云端存在，或您的仓库为私库，或网络抽风了再次尝试看看?"

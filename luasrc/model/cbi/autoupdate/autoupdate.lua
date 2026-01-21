@@ -9,34 +9,28 @@ local s = m:section(TypedSection, "login", "")
 s.addremove = false
 s.anonymous = true
 
--- Helper function to safely execute commands and handle errors
 local function safe_exec(command)
     local handle = io.popen(command .. " 2>&1")
     if handle then
         local result = handle:read("*a")
         handle:close()
-        return result:gsub("%s+$", "") -- trim trailing whitespace
+        return result:gsub("%s+$", "")
     end
     return ""
 end
 
--- Function to get system information more efficiently
 local function get_sys_info()
     local info = {}
     
-    -- Make sure script is executable
     os.execute("chmod +x /usr/bin/AutoUpdate 2>/dev/null")
     os.execute("echo auto > /tmp/autotimes 2>/dev/null")
     
-    -- Check for updates and capture exit code
     info.check_error = (os.execute("AutoUpdate > /tmp/autoupdate.log 2>&1") ~= 0)
     
-    -- Read configuration values more efficiently
     info.github_url = safe_exec([[awk -F'=' '/GITHUB_LINK=/ {gsub(/"/, "", $2); print $2}' /etc/openwrt_update]])
     info.local_version = safe_exec([[awk -F'=' '/FIRMWARE_VERSION=/ {gsub(/"/, "", $2); print $2}' /etc/openwrt_update]])
     info.cloud_version = safe_exec("cat /tmp/cloud_version 2>/dev/null")
     
-    -- Read tags version info if available
     if nixio.fs.access("/tmp/tags_version") then
         info.equipment_name = safe_exec([[awk -F'=' '/EQUIPMENT_NAME=/ {gsub(/"/, "", $2); print $2}' /tmp/tags_version]])
         info.model_type = safe_exec([[awk -F'=' '/MODEL_TYPE=/ {gsub(/"/, "", $2); print $2}' /tmp/tags_version]])
@@ -50,13 +44,11 @@ local function get_sys_info()
     return info
 end
 
--- AutoUpdate switch
 local o = s:option(Flag, "enable", translate("Enable AutoUpdate"),
     translate("Automatically update firmware during the specified time"))
 o.default = o.disabled
 o.rmempty = false
 
--- Update time settings
 local week = s:option(ListValue, "week", translate("Week Day"))
 week:value(7, translate("Everyday"))
 for i = 0, 6 do
@@ -73,20 +65,52 @@ local minute = s:option(Value, "minute", translate("Fixed Minute"))
 minute.datatype = "range(0,59)"
 minute.rmempty = false
 
--- Get system info once and reuse
 local sys_info = get_sys_info()
 
--- GitHub URL setting
 local github = s:option(Value, "github", translate("GitHub URL"))
 github.default = sys_info.github_url
 github.rmempty = false
 
--- Keep config option
+local use_github_api = s:option(Flag, "use_github_api", translate("Use GitHub API"),
+    translate("Use GitHub API directly instead of zzz_api file. Recommended for custom repositories."))
+use_github_api.default = use_github_api.disabled
+
+local github_proxy = s:option(Value, "github_proxy", translate("GitHub Proxy"))
+github_proxy.default = "https://ghproxy.com"
+github_proxy.rmempty = false
+
+local release_download = s:option(Value, "release_download", translate("Release Download Path"))
+release_download.default = "releases/download"
+release_download.rmempty = false
+
+local source = s:option(Value, "source", translate("Source"))
+source.default = "openwrt"
+source.rmempty = false
+
+local luci_edition = s:option(Value, "luci_edition", translate("LuCI Edition"))
+luci_edition.default = "luci"
+luci_edition.rmempty = false
+
+local firmware_version = s:option(Value, "firmware_version", translate("Firmware Version"))
+firmware_version.default = sys_info.local_version
+firmware_version.rmempty = false
+
+local target_board = s:option(Value, "target_board", translate("Target Board"))
+target_board.default = "x86"
+target_board.rmempty = false
+
+local device_model = s:option(Value, "device_model", translate("Device Model"))
+device_model.default = "generic"
+device_model.rmempty = false
+
+local firmware_suffix = s:option(Value, "firmware_suffix", translate("Firmware Suffix"))
+firmware_suffix.default = ".img.gz"
+firmware_suffix.rmempty = false
+
 local use_no_config_update = s:option(Flag, "use_no_config_update", 
     translate("Do not keep configuration on update"))
 use_no_config_update.default = use_no_config_update.disabled
 
--- Upgrade button with enhanced error handling
 local button_upgrade_firmware = s:option(Button, "_upgrade", translate("Upgrade to Latest Version"),
     translate("Click the button below to upgrade to the latest version. Please wait patiently until the router reboots.")..
     "<br><br><br>".. translate("Local firmware version:").. " <strong>".. sys_info.local_version.. "</strong>"..
@@ -105,22 +129,17 @@ button_upgrade_firmware.inputtitle = translate("Start Upgrade")
 button_upgrade_firmware.template = "autoupdate/autoupdate"
 
 function button_upgrade_firmware.write(self, section)
-    -- Read config value safely
     local config_value = safe_exec("uci -q get autoupdate.@login[0].use_no_config_update || echo 0")
     local use_no_config = (config_value == "1")
     
-    -- Build and execute upgrade command
     local upgrade_command = use_no_config and "AutoUpdate -k" or "AutoUpdate -u"
     os.execute(upgrade_command .. " >> /tmp/autoupdate.log 2>&1 &")
     
-    -- Show immediate feedback
     luci.http.redirect(luci.dispatcher.build_url("admin/system/autoupdate") .. "?upgrade_started=1")
 end
 
--- Cleanup temporary files
 os.execute("rm -f /tmp/autotimes 2>/dev/null")
 
--- Apply settings and restart service
 local uci = luci.model.uci.cursor()
 uci:set("autoupdate", "config", "enable", "1")
 if uci:changes() then
