@@ -1,4 +1,4 @@
-# Copyright (C) 2021 AutoUpdate <281677160@qq.com>
+# Maintained for xztxy OpenWrt firmware builds
 #
 # This is free software, licensed under the GNU General Public License v3.
 #
