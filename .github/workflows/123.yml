@@ -413,7 +413,7 @@ jobs:
         run: |
           cd openwrt
           rm -rf build_dir tmp dl
-          df -h
+          df -h | awk 'NR==1 {print "文件系统 大小 已用 可用 使用率 挂载点"}; NR>1 {print $0}'
 
       - name: 📢 发送企业微信通知
         if: always() # 无论成功或失败都执行
