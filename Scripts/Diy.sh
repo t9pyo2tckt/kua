@@ -53,15 +53,15 @@ rm -rf feeds/luci/applications/luci-app-adguardhome
 git clone --depth=1 https://github.com/t9pyo2tckt/luci-app-adguardhome package/luci-app-AAAAA
 git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
 
-# 下载luci-app-quickstart安装包
-git_sparse_clone main https://github.com/linkease/nas-packages-luci luci/luci-app-quickstart
-mv luci-app-quickstart package/luci-app-quickstart
+# # 下载luci-app-quickstart安装包
+# git_sparse_clone main https://github.com/linkease/nas-packages-luci luci/luci-app-quickstart
+# mv luci-app-quickstart package/luci-app-quickstart
 
-# 下载quickstart后端包
-git_sparse_clone master https://github.com/linkease/nas-packages network/services/quickstart
-mv quickstart package/quickstart
+# # 下载quickstart后端包
+# git_sparse_clone master https://github.com/linkease/nas-packages network/services/quickstart
+# mv quickstart package/quickstart
 
-sed -i 's/+luci-app-store//' ./package/luci-app-quickstart/Makefile
+# sed -i 's/+luci-app-store//' ./package/luci-app-quickstart/Makefile
 
 # # store
 # git clone --depth=1 https://github.com/linkease/istore-ui package/luci-app-store-ui
@@ -309,7 +309,8 @@ grep -q 'openwrt_menu_zh' /etc/profile || echo '[ -x /usr/bin/openwrt_menu_zh.sh
 grep -q "alias menu" /etc/profile || echo "alias menu='/usr/bin/openwrt_menu_zh.sh'" >> /etc/profile
 chmod +x /usr/share/AdGuardHome/addhost.sh
 chmod +x /root/ipv6_notify.sh
-(crontab -l 2>/dev/null; echo "*/5 * * * * /root/ipv6_notify.sh") | crontab -
+(crontab -l 2>/dev/null; echo "0 */12 * * * /root/ipv6_notify.sh") | crontab -
+
 EOF
 elif [[ "${REPO_NAME}" == "lede" ]]; then
     cat >> "${ZZZ}" <<-EOF
@@ -497,7 +498,8 @@ grep -q 'openwrt_menu_zh' /etc/profile || echo '[ -x /usr/bin/openwrt_menu_zh.sh
 grep -q "alias menu" /etc/profile || echo "alias menu='/usr/bin/openwrt_menu_zh.sh'" >> /etc/profile
 chmod +x /usr/share/AdGuardHome/addhost.sh
 chmod +x /root/ipv6_notify.sh
-(crontab -l 2>/dev/null; echo "*/5 * * * * /root/ipv6_notify.sh") | crontab -
+(crontab -l 2>/dev/null; echo "0 */12 * * * /root/ipv6_notify.sh") | crontab -
+
 EOF
 fi
 
