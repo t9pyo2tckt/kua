@@ -373,9 +373,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          update_notes="OpenWrt online update channel backed by zzz_api."
+          update_notes="$(printf '### 编译信息\n- 固件类型：%s\n- 总耗时：%s\n- 内核版本：**%s**\n### LuCI插件清单\n`%s`\n' "$AUTOUPDATE_EDITION" "$BUILD_TIME" "$VERSION_KERNEL" "$WRT_LIST")"
           if gh release view "$AUTOUPDATE_TAG" >/dev/null 2>&1; then
-            gh release edit "$AUTOUPDATE_TAG" --title "OpenWrt AutoUpdate x86" --notes "$update_notes"
+            gh release edit "$AUTOUPDATE_TAG" --title "OpenWrt AutoUpdate x86 (${AUTOUPDATE_SOURCE})" --notes "$update_notes"
             # 删除旧固件资产（文件名含时间戳，每次不同，必须先删再传，否则会累积）
             echo "清理旧固件资产..."
             gh release view "$AUTOUPDATE_TAG" --json assets --jq '.assets[].name' | while read -r asset; do
@@ -387,7 +387,7 @@ jobs:
               esac
             done
           else
-            gh release create "$AUTOUPDATE_TAG" --title "OpenWrt AutoUpdate x86" --notes "$update_notes"
+            gh release create "$AUTOUPDATE_TAG" --title "OpenWrt AutoUpdate x86 (${AUTOUPDATE_SOURCE})" --notes "$update_notes"
           fi
           rm -f "$AUTOUPDATE_DIR/zzz_api"
           gh release upload "$AUTOUPDATE_TAG" "$AUTOUPDATE_DIR"/* --clobber
