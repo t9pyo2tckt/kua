@@ -1,0 +1,649 @@
+###########################################################
+# 矩阵并行编译：ledex86 / immortalwrtx86 / meson8b
+# 整合三份yml全部功能，统一维护
+###########################################################
+name: Build OpenWrt Matrix
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  repository_dispatch:
+  schedule:
+    - cron: 0 18 * * 5
+  workflow_dispatch:
+    inputs:
+      OP_IP:
+        description: '静态IP地址'
+        default: '192.168.9.1'
+        type: choice
+        options:
+          - '192.168.9.1'
+          - '192.168.9.253'
+      BUILTIN_CONFIG:
+        description: '内置配置文件'
+        default: 'true'
+        type: boolean
+      UPLOAD_RELEASES:
+        description: '上传固件到 Releases'
+        default: 'true'
+        type: boolean
+      SSH:
+        description: SSH 连接编译环境
+        default: 'false'
+        required: false
+        type: boolean
+      Enable_cache:
+        description: '开启缓存加速'
+        default: 'true'
+        type: boolean
+      MERGE_RULES:
+        description: '合并广告规则并发布 gh-pages'
+        default: 'true'
+        type: boolean
+
+run-name: "矩阵编译固件 - 多设备并行"
+
+env:
+  WEIXIN_WEBHOOK: ${{ secrets.WEIXIN_WEBHOOK }}
+  TZ: Asia/Shanghai
+
+jobs:
+  # 前置任务：读取界面输入，输出给编译job，解决matrix无法读取github上下文报错
+  Prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      OP_IP: ${{ steps.get_input.outputs.OP_IP }}
+      BUILTIN_CONFIG: ${{ steps.get_input.outputs.BUILTIN_CONFIG }}
+      UPLOAD_RELEASES: ${{ steps.get_input.outputs.UPLOAD_RELEASES }}
+    steps:
+      - name: 📥 读取用户输入参数
+        id: get_input
+        run: |
+          echo "OP_IP=${{ github.event.inputs.OP_IP }}" >> $GITHUB_OUTPUT
+          echo "BUILTIN_CONFIG=${{ github.event.inputs.BUILTIN_CONFIG }}" >> $GITHUB_OUTPUT
+          echo "UPLOAD_RELEASES=${{ github.event.inputs.UPLOAD_RELEASES }}" >> $GITHUB_OUTPUT
+
+  Compile:
+    name: "编译 ${{ matrix.build.name }}"
+    needs: Prepare
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          # lede x86
+          - name: 🔹 ledex86
+            config_file: ledex86
+            source: coolsnowwolf/lede:master
+            fw_tag: ledex86
+            img_pattern: "*combined-efi.img.gz"
+            target_arch: x86_64
+            #checkout_commit: 179e17ece6d2445cc2a3fcdecf9bdd5d7d933f3f
+          # immortalwrt x86
+          - name: 🟣 immortalwrtx86
+            config_file: immortalwrtx86
+            source: immortalwrt/immortalwrt:openwrt-25.12
+            fw_tag: immortalwrtx86
+            img_pattern: "*squashfs-combined-efi.img.gz"
+            target_arch: x86_64
+          # lede meson8b
+          - name: 🟠 meson8b
+            config_file: meson8b
+            source: coolsnowwolf/lede:master
+            fw_tag: meson8b
+            img_pattern: "*emmc.burn.img.xz"
+            target_arch: armv7
+            #checkout_commit: 179e17ece6d2445cc2a3fcdecf9bdd5d7d933f3f
+    steps:
+      - name: 🏗️ 初始化环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig tree texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone Asia/Shanghai
+          sudo mkdir -p /workdir
+          sudo chown $USER:$GROUPS /workdir
+
+      - name: 🔄 变量处理
+        id: date
+        run: |
+          echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+          echo "FILE_TIME1=$(date "+%Y年%m月%d日-%H点%M分")" >> $GITHUB_ENV
+          echo "FILE_TIME2=$(date "+%Y%m%d")" >> $GITHUB_ENV
+          START_TIME=`date +'%Y-%m-%d %H:%M:%S'`
+          echo "START_SECONDS=$(date --date="$START_TIME" +%s)" >> $GITHUB_ENV
+          # 从前置Prepare读取输入参数
+          echo "OP_IP=${{ needs.Prepare.outputs.OP_IP }}" >> $GITHUB_ENV
+          echo "BUILTIN_CONFIG=${{ needs.Prepare.outputs.BUILTIN_CONFIG }}" >> $GITHUB_ENV
+          echo "UPLOAD_RELEASES=${{ needs.Prepare.outputs.UPLOAD_RELEASES }}" >> $GITHUB_ENV
+
+          # 拆分矩阵源码地址
+          SRC_STR=${{ matrix.build.source }}
+          REPO_URL="https://github.com/$(cut -d \: -f 1 <<< $SRC_STR)"
+          REPO_BRANCH=$(cut -d \: -f 2 <<< $SRC_STR)
+          echo "REPO_URL=$REPO_URL" >> $GITHUB_ENV
+          echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
+          REPO_USER="$(echo $REPO_URL | awk -F '/' '{print $(NF-1)}')"
+          echo "REPO_USER=$REPO_USER" >> $GITHUB_ENV
+          REPO_NAME="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
+
+          CONFIG_REPO_URL="https://z89pcszxqd:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/t9pyo2tckt/BUILTIN_CONFIG"
+          echo "CONFIG_REPO_URL=${CONFIG_REPO_URL}" >> $GITHUB_ENV
+          echo "CONFIG_FILE=${{ matrix.build.config_file }}" >> $GITHUB_ENV
+          echo "FIRMWARE_TAG=${{ matrix.build.fw_tag }}" >> $GITHUB_ENV
+          echo "IMG_PATTERN=${{ matrix.build.img_pattern }}" >> $GITHUB_ENV
+          echo "target_arch=${{ matrix.build.target_arch }}" >> $GITHUB_ENV
+
+      - name: 🧹 磁盘清理
+        uses: easimon/maximize-build-space@master
+        with:
+          swap-size-mb: 1024
+          temp-reserve-mb: 100
+          root-reserve-mb: 1024
+
+      - name: 📦 actions/checkout
+        uses: actions/checkout@main
+
+      - name: 📦 克隆OpenWrt源码
+        run: |
+          git clone -b $REPO_BRANCH $REPO_URL openwrt
+          cd openwrt
+          # 如果矩阵配置了 checkout_commit，则切换到指定 commit
+          if [ -n "${{ matrix.build.checkout_commit }}" ]; then
+            echo "正在切换到指定 commit: ${{ matrix.build.checkout_commit }}"
+            git fetch origin ${{ matrix.build.checkout_commit }}
+            git checkout ${{ matrix.build.checkout_commit }}
+            echo "已切换到: ${{ matrix.build.checkout_commit }} ($(git log -1 --pretty=format:'%h %s'))"
+          else
+            echo "未配置 checkout_commit，使用最新 commit"
+          fi
+          # echo >> feeds.conf.default
+          # echo 'src-git nas https://github.com/linkease/nas-packages.git;master' >> feeds.conf.default
+          # echo 'src-git nas_luci https://github.com/linkease/nas-packages-luci.git;main' >> feeds.conf.default
+          ./scripts/feeds update -a
+          echo "WRT_HASH=$(git log -1 --pretty=format:'%h')" >> $GITHUB_ENV
+          echo "VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")" >> $GITHUB_ENV
+
+      - name: 🛠️ 运行DIY脚本
+        run: |
+          chmod +x "${GITHUB_WORKSPACE}/Scripts/Diy.sh"
+          cd openwrt
+          cp $GITHUB_WORKSPACE/Configs/${{ env.CONFIG_FILE }} .config
+          source $GITHUB_WORKSPACE/Scripts/Diy.sh
+          Firmware_Diy_1
+          Firmware_Diy_2
+
+      - name: 🔌 SSH连接Actions
+        if: ${{ github.event.inputs.ssh == 'true' }}
+        uses: mxschmitt/action-tmate@v3
+
+      - name: 💾 缓存工具链
+        if: ${{ github.event.inputs.Enable_cache == 'true' }}
+        uses: actions/cache@main
+        with:
+          key: ${{ env.REPO_NAME }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.WRT_HASH }}
+          restore-keys: ${{ env.REPO_NAME }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+          path: |
+            ./openwrt/.ccache
+            ./openwrt/staging_dir
+
+      - name: 🕒 缓存时间戳维护
+        if: ${{ github.event.inputs.Enable_cache == 'true' }}
+        run: |
+          if [ -d "./openwrt/staging_dir" ]; then
+            find "./openwrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
+              find "$DIR" -type f -exec touch {} +
+            done
+            mkdir -p ./openwrt/tmp && echo "1" > ./openwrt/tmp/.build
+            echo "缓存目录更新完成，可复用工具链"
+          else
+            echo "工具链缓存缺失，完整编译"
+          fi
+
+      - name: ⚙️ 生成config
+        run: |
+          cd openwrt
+          make defconfig
+          ./scripts/diffconfig.sh > AAA.txt
+          cat AAA.txt
+
+      - name: 📥 预下载依赖包
+        run: |
+          cd openwrt
+          make download -j8
+
+      - name: 🔨 编译OpenWrt固件
+        id: compile
+        run: |
+          cd openwrt
+          make -j$(nproc) || make -j1 V=s
+
+      - name: 🕒 编译时间计算
+        run: |
+          START_SECONDS=${{ env.START_SECONDS }}
+          END_SECONDS=$(date +%s)
+          SECONDS=$((END_SECONDS - START_SECONDS))
+          HOUR=$(( SECONDS / 3600 ))
+          MIN=$(( (SECONDS % 3600) / 60 ))
+          SEC=$(( SECONDS % 60 ))
+          echo "BUILD_TIME=${HOUR}时${MIN}分${SEC}秒" >> $GITHUB_ENV
+          echo "【${{ env.FIRMWARE_TAG }}】编译总耗时: ${HOUR}h${MIN}m${SEC}s"
+
+      - name: 💾 EMMC直刷固件
+        if: ${{ env.DEVICE_SUBTARGET == 'meson8b' }}
+        run: |
+          sudo apt install android-sdk-libsparse-utils
+          ver="v0.3.1"
+          curl -L -o ./AmlImg https://github.com/lxiaya/AmlImg/releases/download/$ver/AmlImg_${ver}_linux_amd64
+          chmod +x ./AmlImg
+          curl -L -o ./uboot.img https://github.com/lxiaya/u-boot-onecloud/releases/download/build-20230901-0443/eMMC.burn.img
+          ./AmlImg unpack ./uboot.img burn/
+          echo "::endgroup::"
+          gunzip openwrt/bin/targets/*/*/*.gz
+          diskimg=$(ls openwrt/bin/targets/*/*/*.img)
+          loop=$(sudo losetup --find --show --partscan $diskimg)
+          img_ext="openwrt.img"
+          img_mnt="xd"
+          rootfs_mnt="img"
+          boot_img=$1${img_ext}
+          boot_img_mnt=$1${img_mnt}
+          rootfs_img_mnt=$1${rootfs_mnt}
+          echo ${boot_img}
+          echo ${boot_img_mnt}
+          echo ${rootfs_img_mnt}
+          sudo rm -rf ${boot_img}
+          sudo rm -rf ${boot_img_mnt}
+          sudo rm -rf ${rootfs_img_mnt}
+          sudo dd if=/dev/zero of=${boot_img} bs=1M count=400
+          sudo mkfs.ext4 ${boot_img}
+          sudo mkdir ${boot_img_mnt}
+          sudo mkdir ${rootfs_img_mnt}
+          sudo mount ${boot_img} ${boot_img_mnt}
+          sudo mount ${loop}p2 ${rootfs_img_mnt}
+          cd ${rootfs_img_mnt}
+          sudo cp -r * ../${boot_img_mnt}
+          cd ..
+          sudo sync
+          sudo umount ${boot_img_mnt}
+          sudo umount ${rootfs_img_mnt}
+          sudo img2simg ${loop}p1 burn/boot.simg
+          sudo img2simg openwrt.img burn/rootfs.simg
+          sudo rm -rf *.img
+          sudo losetup -d $loop
+          cat <<EOF >>burn/commands.txt
+          PARTITION:boot:sparse:boot.simg
+          PARTITION:rootfs:sparse:rootfs.simg
+          EOF
+          prefix=$(ls openwrt/bin/targets/*/*/*.img | sed 's/\.img$//')
+          burnimg=${prefix}.burn.img
+          ./AmlImg pack $burnimg burn/
+          for f in openwrt/bin/targets/*/*/*.burn.img; do
+            sha256sum "$f" >"${f}.sha"
+            xz -9 --threads=0 --compress "$f"
+          done
+          sudo rm -rf openwrt/bin/targets/*/*/*.img
+          sudo rm -rf openwrt/bin/targets/*/*/*.gz
+
+      - name: 📦 准备 zzz_api 更新固件
+        if: matrix.build.target_arch == 'x86_64' && steps.compile.outcome == 'success' && !cancelled()
+        run: |
+          update_dir="$GITHUB_WORKSPACE/outputs/$AUTOUPDATE_TAG"
+          rm -rf "$update_dir"
+          mkdir -p "$update_dir"
+          cd openwrt/bin/targets/*/*
+          mapfile -d '' update_candidates < <(
+            find . -type f -name '*squashfs-combined*.img.gz' -print0
+          )
+          if [[ "${#update_candidates[@]}" -eq 0 ]]; then
+            echo "未找到 x86 squashfs combined 固件，跳过 zzz_api"
+            exit 1
+          fi
+          for firmware in "${update_candidates[@]}"; do
+            base_name="$(basename "$firmware")"
+            checksum="$(md5sum "$firmware" | cut -c1-3)$(sha256sum "$firmware" | cut -c1-3)"
+            # 按源固件实际启动类型命名：combined-efi(GPT) → uefi，combined(MBR) → legacy
+            # 每份固件只上传一次，不再复制两种命名，避免 Release 中出现内容重复的资产
+            if [[ "$base_name" == *-efi.img.gz ]]; then
+              boot_type="uefi"
+            else
+              boot_type="legacy"
+            fi
+            update_name="${AUTOUPDATE_EDITION}-${AUTOUPDATE_SOURCE}-${TARGET_PROFILE}-${COMPILE_DATE}-${boot_type}-${checksum}.img.gz"
+            cp "$firmware" "$update_dir/$update_name"
+            echo "已准备更新固件: $update_name (源文件: $base_name)"
+          done
+          echo "AUTOUPDATE_DIR=$update_dir" >> $GITHUB_ENV
+
+      - name: 📦 整理固件
+        if: steps.compile.outcome == 'success' && !cancelled()
+        run: |
+          cd openwrt/bin/targets/*/*
+          # 1. 提取 LuCI 插件列表
+          echo "WRT_LIST=$(find -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
+          VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \;)
+          echo "VERSION_KERNEL=$VERSION_KERNEL" >> $GITHUB_ENV
+          # 2. 清理文件（保留 burn.xz 和所有 squashfs-combined 变体）
+          find . -type f ! -name "${IMG_PATTERN}" -delete 
+          sleep 2
+          # 3. 定义重命名前缀
+          IMG_PREFIX="${{ env.REPO_NAME }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-$VERSION_KERNEL-${{ env.FILE_TIME2 }}"
+          ls -lh
+          # 4. 查找源固件（优先匹配 efi 版本）
+          SOURCE_IMG=$(ls ${IMG_PATTERN} 2>/dev/null)
+          if [ -n "$SOURCE_IMG" ]; then
+            echo "找到源固件: $SOURCE_IMG"
+            # 自动保留原文件后缀（例如 .img.gz）
+            mv "$SOURCE_IMG" "${IMG_PREFIX}.${SOURCE_IMG#*.}"
+            echo "已重命名为: ${IMG_PREFIX}.${SOURCE_IMG#*.}"
+          else
+            echo "错误：未找到任何可重命名的固件文件！"
+            exit 1
+          fi
+          # 5. 设置输出变量
+          echo "FIRMWARE_REL_PATH=openwrt/bin/targets/*/*" >> $GITHUB_ENV
+
+      - name: 🚀 上传固件到Release
+        if: env.UPLOAD_RELEASES == 'true' && steps.compile.outcome == 'success' && !cancelled() && matrix.build.target_arch != 'x86_64'
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ env.REPO_NAME }}/${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}
+          allowUpdates: true
+          tag: ${{ env.REPO_NAME }}/${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: ${{ env.FIRMWARE_REL_PATH }}/*.img.*
+          removeArtifacts: true
+          body: |
+            ### 编译信息
+            - 固件类型：${{ env.REPO_NAME }}/${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}
+            - 总耗时：${{ env.BUILD_TIME }}
+            - 内核版本：**${{ env.VERSION_KERNEL }}**
+            ### LuCI插件清单
+            `${{ env.WRT_LIST }}`
+
+      - name: 🚀 发布 zzz_api 更新通道
+        if: matrix.build.target_arch == 'x86_64' && env.UPLOAD_RELEASES == 'true' && steps.compile.outcome == 'success' && !cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          update_notes="OpenWrt online update channel backed by zzz_api."
+          if gh release view "$AUTOUPDATE_TAG" >/dev/null 2>&1; then
+            gh release edit "$AUTOUPDATE_TAG" --title "OpenWrt AutoUpdate x86" --notes "$update_notes"
+            # 删除旧固件资产（文件名含时间戳，每次不同，必须先删再传，否则会累积）
+            echo "清理旧固件资产..."
+            gh release view "$AUTOUPDATE_TAG" --json assets --jq '.assets[].name' | while read -r asset; do
+              case "$asset" in
+                *.img.gz)
+                  echo "删除旧固件: $asset"
+                  gh release delete-asset "$AUTOUPDATE_TAG" "$asset" --yes || true
+                  ;;
+              esac
+            done
+          else
+            gh release create "$AUTOUPDATE_TAG" --title "OpenWrt AutoUpdate x86" --notes "$update_notes"
+          fi
+          rm -f "$AUTOUPDATE_DIR/zzz_api"
+          gh release upload "$AUTOUPDATE_TAG" "$AUTOUPDATE_DIR"/* --clobber
+          gh release delete-asset "$AUTOUPDATE_TAG" zzz_api --yes >/dev/null 2>&1 || true
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$AUTOUPDATE_TAG" | python3 -m json.tool > "$AUTOUPDATE_DIR/zzz_api"
+          gh release upload "$AUTOUPDATE_TAG" "$AUTOUPDATE_DIR/zzz_api" --clobber
+          echo "✅ zzz_api 更新通道已发布: $AUTOUPDATE_TAG"
+
+      - name: 🗑️ 删除旧缓存
+        if: steps.compile.outcome == 'success' && !cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --key "${{ env.REPO_NAME }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}" --json key --jq '.[].key' | while read -r key; do
+            [ -n "$key" ] || continue
+            if [ "$key" != "${{ env.REPO_NAME }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.WRT_HASH }}" ]; then
+              gh cache delete "$key" || true
+            fi
+          done
+
+      - name: 🧹 再次磁盘清理
+        if: ${{ github.event.inputs.Enable_cache == 'true' }}
+        run: |
+          cd openwrt
+          rm -rf build_dir tmp dl
+          df -h
+
+      - name: 📢 发送企业微信通知
+        if: always() # 无论成功或失败都执行
+        run: |
+          # 判断编译结果
+          if [ "${{ steps.compile.outcome }}" == "success" ]; then
+            STATUS="✅ 编译成功"
+            COLOR="info"
+            MSG="固件已打包并上传至 Release。"
+          else
+            STATUS="❌ 编译失败"
+            COLOR="warning"
+            MSG="请检查 Actions 日志以排查错误。"
+          fi
+          # 构造消息内容 (Markdown格式)
+          PAYLOAD=$(cat <<EOF
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "content": "### OpenWrt 编译通知\n> **状态：** <font color=\"$COLOR\">$STATUS</font>\n> **固件类型：** ${{ env.FIRMWARE_TAG }}\n> **编译耗时：** ${{ env.BUILD_TIME }}\n> **触发分支：** ${{ github.ref_name }}\n> **编译时间：** ${{ env.FILE_TIME1 }}\n\n$MSG\n[点击查看编译日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            }
+          }
+          EOF
+          )
+          # 发送 POST 请求到企业微信机器人
+          curl -s -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "$WEIXIN_WEBHOOK"
+
+      - name: 🗑️ 删除运行记录
+        if: always()
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 0
+          keep_minimum_runs: 0
+
+  # 广告规则合并去重：编译完成后执行，合并上游规则并发布到 gh-pages
+  MergeRules:
+    name: 🧹 广告规则合并去重
+    needs: Compile
+    # 开关：手动触发时取消勾选“合并广告规则”则跳过；定时/接口触发无此参数，默认运行
+    if: always() && github.event.inputs.MERGE_RULES != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📦 检出仓库
+        uses: actions/checkout@v5
+
+      - name: 📁 创建临时目录和输出目录
+        run: |
+          mkdir -p temp output
+
+      - name: ⬇️ 下载所有上游规则
+        run: |
+          # ========== 在这里配置你的规则源列表 ==========
+          RULE_URLS=(
+            "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"
+            "https://easylist-downloads.adblockplus.org/easylist.txt"
+            "https://easylist-downloads.adblockplus.org/easylistchina.txt"
+            "https://anti-ad.net/easylist.txt"
+            "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt"
+            "https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt"
+            "https://raw.githubusercontent.com/YTjungle666/yt-adguard-rules/main/allowlist.txt"
+          )
+          # =============================================
+
+          # 循环下载每个规则文件
+          i=0
+          for url in "${RULE_URLS[@]}"; do
+            i=$((i+1))
+            echo "正在下载第 $i 个规则源: $url"
+            curl -sL --fail "$url" -o "temp/source_$i.txt" || echo "警告: 下载失败 $url"
+          done
+
+      - name: 🔀 合并并去重规则
+        id: merge_rules
+        run: |
+          # 核心去重逻辑
+          cat temp/*.txt \
+            | grep -v "^!" `# 过滤 adblock 格式注释行` \
+            | grep -v "^#" `# 过滤 hosts 格式注释行` \
+            | grep -v "^$" `# 过滤空行` \
+            | sort -u `# 排序并去除完全重复的行` \
+            > output/merged-blocklist.txt
+
+          # 统计并输出规则数量
+          BEFORE=$(cat temp/*.txt | grep -v "^!" | grep -v "^#" | grep -v "^$" | wc -l)
+          AFTER=$(wc -l < output/merged-blocklist.txt)
+          REMOVED=$((BEFORE - AFTER))
+
+          echo "合并前规则总数: $BEFORE"
+          echo "去重后规则总数: $AFTER"
+          echo "去重了 $REMOVED 条重复规则"
+
+          # 将统计结果写入全局环境变量，供后续通知步骤调用
+          echo "RULES_BEFORE=$BEFORE" >> $GITHUB_ENV
+          echo "RULES_AFTER=$AFTER" >> $GITHUB_ENV
+          echo "RULES_REMOVED=$REMOVED" >> $GITHUB_ENV
+
+      - name: � 获取上次发布的规则
+        id: fetch_previous
+        run: |
+          # 从 gh-pages 分支拉取上次发布的合并规则，用于对比本次变化
+          if git fetch origin gh-pages --depth=1 2>/dev/null \
+            && git show origin/gh-pages:merged-blocklist.txt > temp/previous-blocklist.txt 2>/dev/null; then
+            PREV_COUNT=$(wc -l < temp/previous-blocklist.txt | tr -d ' ')
+            echo "已获取上次发布的规则: $PREV_COUNT 条"
+            echo "HAS_PREVIOUS=true" >> $GITHUB_ENV
+          else
+            echo "gh-pages 分支或历史规则不存在，本次为首次发布，跳过变化对比"
+            echo "HAS_PREVIOUS=false" >> $GITHUB_ENV
+          fi
+
+      - name: 🔍 对比上次与本次规则变化
+        if: env.HAS_PREVIOUS == 'true'
+        run: |
+          # comm 要求输入有序，统一使用 C locale 排序，保证对比结果稳定
+          LC_ALL=C sort temp/previous-blocklist.txt > temp/prev.sorted
+          LC_ALL=C sort output/merged-blocklist.txt > temp/curr.sorted
+          # 本次新增：本次列表有、上次列表没有（comm -13 取第二个文件独有行）
+          LC_ALL=C comm -13 temp/prev.sorted temp/curr.sorted > output/rules-added.txt
+          # 本次移除：上次列表有、本次列表没有（comm -23 取第一个文件独有行）
+          LC_ALL=C comm -23 temp/prev.sorted temp/curr.sorted > output/rules-removed.txt
+
+          ADDED=$(wc -l < output/rules-added.txt | tr -d ' ')
+          DELETED=$(wc -l < output/rules-removed.txt | tr -d ' ')
+          echo "RULES_ADDED=$ADDED" >> $GITHUB_ENV
+          echo "RULES_DELETED=$DELETED" >> $GITHUB_ENV
+
+          echo "本次新增规则: $ADDED 条"
+          echo "本次移除规则: $DELETED 条"
+          echo "::group::本次新增规则（前20条）"
+          head -20 output/rules-added.txt
+          echo "::endgroup::"
+          echo "::group::本次移除规则（前20条）"
+          head -20 output/rules-removed.txt
+          echo "::endgroup::"
+
+      - name: � 发布到 GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./output
+          publish_branch: gh-pages
+
+      - name: 📢 发送企业微信通知
+        if: always() # 无论成功/失败都执行通知
+        env:
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # 使用 Python 构造消息体，规则文本中的引号/反斜杠由 json.dumps 自动转义
+          python3 <<'PY'
+          import json
+          import os
+          import urllib.request
+          from datetime import datetime, timezone, timedelta
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          success = os.environ.get("JOB_STATUS") == "success"
+          # 仅在合并成功且存在历史规则时展示变化（失败时 gh-pages 未更新，避免误导）
+          show_diff = success and os.environ.get("HAS_PREVIOUS") == "true"
+
+          if success:
+              status, color, msg = "✅ 规则合并成功", "info", "规则已更新并发布。"
+          else:
+              status, color, msg = "❌ 规则合并失败", "warning", "请点击下方日志链接排查具体错误。"
+
+          def env_int(key):
+              return (os.environ.get(key) or "0").strip()
+
+          def samples(path, limit=3):
+              result = []
+              try:
+                  with open(path, encoding="utf-8", errors="replace") as f:
+                      for raw in f:
+                          text = raw.strip().replace("`", "")
+                          if not text:
+                              continue
+                          result.append(text if len(text) <= 60 else text[:57] + "...")
+                          if len(result) >= limit:
+                              break
+              except OSError:
+                  pass
+              return result
+
+          now = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+
+          lines = [
+              "### AdGuard 规则合并通知",
+              f'> **状态：** <font color="{color}">{status}</font>',
+              f"> **合并前规则数：** {env_int('RULES_BEFORE')} 条",
+              f"> **去重后规则数：** {env_int('RULES_AFTER')} 条",
+              f"> **移除重复规则：** {env_int('RULES_REMOVED')} 条",
+          ]
+
+          if show_diff:
+              lines.append(f"> **较上次新增：** {env_int('RULES_ADDED')} 条")
+              lines.append(f"> **较上次移除：** {env_int('RULES_DELETED')} 条")
+              added = samples("output/rules-added.txt")
+              deleted = samples("output/rules-removed.txt")
+              if added:
+                  lines.append("> **新增样例：** " + " / ".join(f"`{x}`" for x in added))
+              if deleted:
+                  lines.append("> **移除样例：** " + " / ".join(f"`{x}`" for x in deleted))
+          elif success:
+              lines.append("> **规则变化：** 首次发布，无历史对比数据")
+
+          lines += [
+              f"> **触发分支：** {os.environ.get('GITHUB_REF_NAME', '')}",
+              f"> **执行时间：** {now} 北京时间",
+              "",
+              msg,
+              f"> **订阅地址：** [点击复制](https://raw.githubusercontent.com/{repo}/gh-pages/merged-blocklist.txt)",
+          ]
+          if show_diff:
+              lines.append(
+                  f"> **变化明细：** [新增 rules-added.txt](https://raw.githubusercontent.com/{repo}/gh-pages/rules-added.txt)"
+                  f" / [移除 rules-removed.txt](https://raw.githubusercontent.com/{repo}/gh-pages/rules-removed.txt)"
+              )
+          lines += ["", f"[点击查看运行日志]({os.environ['RUN_URL']})"]
+
+          payload = {
+              "msgtype": "markdown",
+              "markdown": {"content": "\n".join(lines)},
+          }
+          req = urllib.request.Request(
+              os.environ["WEIXIN_WEBHOOK"],
+              data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+          )
+          urllib.request.urlopen(req, timeout=15).read()
+          print("企业微信通知已发送")
+          PY
