@@ -226,6 +226,7 @@ jobs:
         run: |
           cd openwrt
           make -j$(nproc) || make -j1 V=s
+          df -h | awk 'NR==1 {print "文件系统 大小 已用 可用 使用率 挂载点"}; NR>1 {print $0}'
 
       - name: 🕒 编译时间计算
         run: |
