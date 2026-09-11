@@ -3,13 +3,15 @@
     ref="cardRef"
     :class="
       twMerge(
-        'proxy-node-card bg-base-200 border-base-content/[0.08] flex cursor-pointer flex-col items-start rounded-md border transition-colors duration-150',
+        'proxy-node-card bg-base-200 border-base-content/[0.08] flex flex-col items-start rounded-md border transition-colors duration-150',
+        selectable ? 'cursor-pointer' : 'cursor-default',
         hoverClass,
         isSmallCard ? 'gap-1 p-1' : 'gap-2 p-2',
         latencyTipAnimationClass,
       )
     "
     @contextmenu.stop.prevent="handlerLatencyTest"
+    @click="onClick"
   >
     <div
       class="w-full flex-1 text-sm"
@@ -17,18 +19,20 @@
       @mouseenter="checkTruncation"
     >
       <ProxyIcon
-        v-if="node?.icon"
+        v-if="shownIcon"
         class="-mt-[2px] shrink-0 align-middle"
-        :icon="node.icon"
+        :icon="shownIcon"
+        :size="16"
+        :scale="icon !== undefined ? iconScale : node.iconScale"
         :fill="active ? 'fill-primary-content' : 'fill-base-content'"
       /><span
         v-if="active"
         class="text-primary-content"
-        >{{ node.name }}</span
+        >{{ displayName }}</span
       ><span
         v-else
         class="text-base-content"
-        >{{ node.name }}</span
+        >{{ displayName }}</span
       >
     </div>
 
@@ -51,10 +55,11 @@
 </template>
 
 <script setup lang="ts">
-import { PROXY_CARD_SIZE, PROXY_SORT_TYPE } from '@/constant'
+import { failoverDisplayName, isFailoverGroup } from '@/store/openboxFailover'
+import { PROXY_CARD_SIZE, PROXY_SORT_TYPE, PROXY_TYPE } from '@/constant'
 import { checkTruncation } from '@/helper/tooltip'
 import { scrollIntoCenter } from '@/helper/utils'
-import { getIPv6ByName, getTestUrl, proxyLatencyTest, proxyMap } from '@/store/proxies'
+import { getIPv6ByName, getTestUrl, isManualSelectable, proxyGroupLatencyTest, proxyLatencyTest, proxyMap } from '@/store/proxies'
 import { IPv6test, proxyCardSize, proxySortType, theme, truncateProxyName } from '@/store/settings'
 import { smartWeightsMap } from '@/store/smart'
 import { twMerge } from 'tailwind-merge'
@@ -87,10 +92,28 @@ const props = defineProps<{
   name: string
   active?: boolean
   groupName?: string
+  // 卡片标题用别的文字(故障转移的页签卡片:标题是页签名 / 角色,name 仍是它在内核里的出站)
+  label?: string
+  // 卡片图标用别的(URL;故障转移的页签卡片用页签图标,没挑就是父组的);给了空串 = 不显示图标
+  icon?: string
+  iconScale?: number
 }>()
+const emit = defineEmits<{ click: [event: MouseEvent] }>()
 
 const cardRef = ref()
+// 能不能点了切换,按所在的组判(store/proxies.ts 的 isManualSelectable):站点集 / 手动组的成员可点;自动择优 /
+// 故障转移(含页签子组)的成员不可点——它们走哪个节点不由用户定。不用布尔 prop:Vue 对没传的布尔 prop 一律当
+// false,会把所有卡片都变成不可点
+const selectable = computed(() => isManualSelectable(props.groupName))
+// 点击只在可选的组里往外发(父组件据此切换);不可选的把事件吞掉,不让它冒泡到外层的折叠开关
+const onClick = (event: MouseEvent) => {
+  event.stopPropagation()
+  if (selectable.value) emit('click', event)
+}
 const node = computed(() => proxyMap.value[props.name])
+// 故障转移的内部子组显示成页签名 / 角色,不露 __fo: 技术 tag
+const displayName = computed(() => props.label ?? failoverDisplayName(node.value.name))
+const shownIcon = computed(() => (props.icon !== undefined ? props.icon : node.value?.icon))
 const isLatencyTesting = ref(false)
 const typeFormatter = (type: string) => {
   type = type.toLowerCase()
@@ -126,7 +149,16 @@ const handlerLatencyTest = async () => {
 
   isLatencyTesting.value = true
   try {
-    await proxyLatencyTest(props.name, getTestUrl(props.groupName))
+    // 这张卡片本身是个自动择优组(站点集 / 组的成员列表里会出现)时,测的应该是"这个组"
+    // 而不是"经这个组出去有多快":后者只从组当前选中的那个节点上跑一次,既不重测其它成员,
+    // 也不会重新择优——当前选中的节点已经不通时,点它必然超时,而且线路不会自己换。
+    // 走 proxyGroupLatencyTest 就是内核的 /group/<name>/delay:强制重测全部成员并立即重新择优。
+    // 故障转移组同理:整组按页签测,报统一的提示(store/proxies.ts 的 failoverGroupLatencyTest)
+    if (node.value.type?.toLowerCase() === PROXY_TYPE.URLTest || isFailoverGroup(props.name)) {
+      await proxyGroupLatencyTest(props.name)
+    } else {
+      await proxyLatencyTest(props.name, getTestUrl(props.groupName))
+    }
     isLatencyTesting.value = false
   } catch {
     isLatencyTesting.value = false

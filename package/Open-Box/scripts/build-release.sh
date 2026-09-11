@@ -56,8 +56,12 @@
 
 set -eu
 
+# 在 macOS 上打包时,BSD tar 会把 com.apple.provenance 之类的扩展属性写成 PAX 头,
+# 路由器上的 GNU/busybox tar 解包时每个文件都报一句 "Ignoring unknown extended header
+# keyword"。无害,但满屏警告吓人,关掉。
+export COPYFILE_DISABLE=1
+
 NODE_VERSION="24.18.0"
-SINGBOX_VERSION="1.13.14"
 
 # ---- 供应链固定:版本号旁边固定对应资产的 sha256,下载后(含缓存命中时)校验,
 # 不匹配就构建失败。避免"每次发版都重新下载却从不校验"的静默供应链口子——
@@ -65,13 +69,6 @@ SINGBOX_VERSION="1.13.14"
 # 版本号务必同步重新计算并写入,不要凭旧哈希手改版本号。----
 NODE_SHA256_X64="b818a0c3857272329cad4d575abf49e5060215858c9c3015437366f8adc7b85d"
 NODE_SHA256_ARM64="b32d834975b3b38cf3226e220d3e1fcb5959047f0b2e184fffb709d9a69ed434"
-
-# sing-box 官方不单独发布 checksums 文件,这两个哈希是从
-# https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/ 下的
-# sing-box-${SINGBOX_VERSION}-linux-{amd64,arm64}-musl.tar.gz 现下现算的(键名用
-# sing-box 自己的架构命名 amd64/arm64,与下方 $SINGBOX_ARCH 对应)。
-SINGBOX_SHA256_AMD64="d5b46de6498427bccfeb87dbafcde4dbefdfe35680020d07d286ad915f0bfb34"
-SINGBOX_SHA256_ARM64="edec18488af35a93cf8b362063146fdd7b557ef9862710ee77a1f4adb5c70118"
 
 # Alpine 的 musl 版 libstdc++ / libgcc(见文件头 Critical 1 说明)。latest-stable
 # 仓库里 x86_64 与 aarch64 目前恰好是同一个包版本,但两个架构的资产是分别构建的
@@ -96,7 +93,6 @@ case "$ARCH" in
     SINGBOX_ARCH="amd64"
     ALPINE_ARCH="x86_64"
     NODE_SHA256="$NODE_SHA256_X64"
-    SINGBOX_SHA256="$SINGBOX_SHA256_AMD64"
     ALPINE_LIBSTDCPP_SHA256="$ALPINE_LIBSTDCPP_SHA256_X86_64"
     ALPINE_LIBGCC_SHA256="$ALPINE_LIBGCC_SHA256_X86_64"
     ;;
@@ -104,7 +100,6 @@ case "$ARCH" in
     SINGBOX_ARCH="arm64"
     ALPINE_ARCH="aarch64"
     NODE_SHA256="$NODE_SHA256_ARM64"
-    SINGBOX_SHA256="$SINGBOX_SHA256_ARM64"
     ALPINE_LIBSTDCPP_SHA256="$ALPINE_LIBSTDCPP_SHA256_AARCH64"
     ALPINE_LIBGCC_SHA256="$ALPINE_LIBGCC_SHA256_AARCH64"
     ;;
@@ -121,6 +116,8 @@ command -v python3 >/dev/null 2>&1 || {
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/singbox-tcp-dns-hotfix/versions.sh"
+export SINGBOX_SOURCE_SHA256
 PANEL_DIR="$ROOT/panel"
 CACHE_DIR="$ROOT/.build-cache"
 
@@ -192,6 +189,15 @@ fi
 [ -z "$VERSION" ] && VERSION="0.0.0-dev"
 
 log "打包 open-box $VERSION,目标 linux-$ARCH(sing-box 架构名: $SINGBOX_ARCH)"
+
+# 内核只从当前仓库的源码补丁构建。CI 可传入同一轮已构建的目录以复用测试产物;
+# 版本、架构、补丁/构建脚本和二进制哈希都必须匹配,没有旧 Release 下载兜底。
+KERNEL_BUILD_DIR=${OPENBOX_KERNEL_BUILD_DIR:-"$CACHE_DIR/kernel-build"}
+if [ -z "${OPENBOX_KERNEL_BUILD_DIR:-}" ]; then
+  sh "$SCRIPT_DIR/singbox-tcp-dns-hotfix/build.sh" "$SINGBOX_ARCH" "$KERNEL_BUILD_DIR"
+fi
+KERNEL_BUNDLE="$KERNEL_BUILD_DIR/sing-box-$SINGBOX_VERSION-linux-$SINGBOX_ARCH-musl"
+python3 "$SCRIPT_DIR/singbox-tcp-dns-hotfix/manifest.py" verify "$KERNEL_BUNDLE" "$SINGBOX_ARCH" "$SINGBOX_VERSION"
 
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/open-box-release.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT INT TERM
@@ -295,37 +301,22 @@ if [ -n "$BAD_NEEDED" ]; then
 fi
 log "DT_NEEDED 校验通过($ARCH): $(printf '%s' "$NODE_NEEDED" | tr '\n' ' ')"
 
-# ---- 6. 下载并解出 sing-box(注意 x64→amd64 映射;必须是 -musl 资产,见上)----
-SINGBOX_TARBALL="sing-box-${SINGBOX_VERSION}-linux-${SINGBOX_ARCH}-musl.tar.gz"
-SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${SINGBOX_TARBALL}"
-SINGBOX_CACHE="$CACHE_DIR/$SINGBOX_TARBALL"
-fetch_cached "$SINGBOX_URL" "$SINGBOX_CACHE" "sing-box $SINGBOX_VERSION ($SINGBOX_ARCH)" "$SINGBOX_SHA256"
-
-log "解出 sing-box..."
-SINGBOX_EXTRACT_DIR="$STAGE/.singbox-extract"
-mkdir -p "$SINGBOX_EXTRACT_DIR"
-tar -xzf "$SINGBOX_CACHE" -C "$SINGBOX_EXTRACT_DIR"
-SINGBOX_BIN=$(find "$SINGBOX_EXTRACT_DIR" -type f -name sing-box | head -n 1)
-if [ -z "$SINGBOX_BIN" ]; then
-  echo "ERROR: sing-box tarball 里找不到 sing-box 二进制" >&2
-  exit 1
-fi
-cp "$SINGBOX_BIN" "$STAGE/bin/sing-box"
+# ---- 6. 封装本次从仓库源码补丁构建的内核 ----
+log "封装本地构建的 sing-box..."
+cp "$KERNEL_BUNDLE/sing-box" "$STAGE/bin/sing-box"
 chmod +x "$STAGE/bin/sing-box"
-rm -rf "$SINGBOX_EXTRACT_DIR"
+cp "$KERNEL_BUNDLE/LICENSE" "$STAGE/bin/sing-box.LICENSE"
+cp "$KERNEL_BUNDLE/BUILD-INFO.json" "$STAGE/bin/sing-box.BUILD-INFO.json"
 
 # ---- 7. 构建期依赖守卫(P6 复审 Minor):确认 sing-box 二进制真正静态链接。
-# 上面第 6 步只是"下载了带 -musl 后缀的资产名",并不能保证 SagerNet 未来某天不会
-# 把这份资产悄悄换成动态链接构建(第 5 步的 node DT_NEEDED 白名单守卫覆盖不到
-# sing-box,只测了 node 自己的二进制)。dt-needed.py 已经在解析 ELF 程序头了,这里
+# 对封装后的二进制再检查一次,确认拷入的就是完整静态构建。dt-needed.py 解析 ELF 程序头,这里
 # 复用同一份解析逻辑断言:既没有 PT_INTERP(没有指定动态链接器路径),也没有
 # PT_DYNAMIC(没有动态段/DT_NEEDED 列表)——两者皆无才是真正的静态二进制。任何一个
 # 存在都直接构建失败,而不是打进产物里到用户路由器上才发现起不来。
 log "校验 sing-box 静态链接(构建期依赖守卫)..."
 python3 "$SCRIPT_DIR/dt-needed.py" --assert-static "$STAGE/bin/sing-box" || {
   echo "ERROR: sing-box($ARCH) 不是纯静态链接(存在 PT_INTERP 或 PT_DYNAMIC 段)。" >&2
-  echo "  SagerNet 的 -musl 资产可能已改成动态链接构建。请确认该资产的链接方式," >&2
-  echo "  必要时改为像 node 一样把所需的 musl 动态库一并捆绑进 node/lib/ 或 bin/。" >&2
+  echo "  请检查当前内核构建工具链,不能用动态链接或精简内核替代。" >&2
   exit 1
 }
 log "sing-box 静态链接校验通过($ARCH)。"
@@ -370,7 +361,16 @@ STABLE_NAME="open-box-linux-${ARCH}.tar.gz"
 VERSIONED_PATH="$OUTDIR/$VERSIONED_NAME"
 STABLE_PATH="$OUTDIR/$STABLE_NAME"
 log "打包 $VERSIONED_NAME..."
-(cd "$STAGE" && tar -czf "$VERSIONED_PATH" node panel bin openwrt meta.json uninstall.sh update.sh)
+# macOS 上的 bsdtar 会把扩展属性(com.apple.provenance 等)写成 PAX 头,路由器上的 tar
+# 每解一个文件就报一句 "Ignoring unknown extended header keyword",无害但满屏都是。
+# COPYFILE_DISABLE 只能挡 ._ 文件,挡不住这种头,要显式关掉 xattr / mac metadata。
+TAR_NO_XATTR=""
+if tar --version 2>/dev/null | grep -qi bsdtar; then
+  TAR_NO_XATTR="--no-xattrs --no-mac-metadata"
+elif tar --version 2>/dev/null | grep -qi "gnu tar"; then
+  TAR_NO_XATTR="--no-xattrs"
+fi
+(cd "$STAGE" && tar $TAR_NO_XATTR -czf "$VERSIONED_PATH" node panel bin openwrt meta.json uninstall.sh update.sh)
 cp "$VERSIONED_PATH" "$STABLE_PATH"
 
 # ---- 11. sha256(分别对两个文件名各算一份,sha256sum -c 依赖文件名匹配)----

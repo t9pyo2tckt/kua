@@ -22,9 +22,9 @@ const props = defineProps<{
 const classMap = {
   overview: {
     list: 'grid grid-cols-2 gap-2 rounded-lg bg-base-200/50 px-4 py-2 lg:grid-cols-6',
-    item: 'flex h-12 flex-col items-start justify-center lg:gap-2 lg:h-24 lg:items-center',
-    label: 'text-sm text-base-content/70',
-    value: 'text-lg lg:text-2xl font-bold',
+    item: 'flex h-12 flex-col items-start justify-center lg:gap-0.5 lg:items-center',
+    label: 'text-xs text-base-content/70',
+    value: 'text-lg lg:text-xl font-bold',
   },
   settings: {
     list: 'grid w-full grid-cols-3 gap-1 rounded-lg bg-base-200/50 p-3',
@@ -33,7 +33,8 @@ const classMap = {
     value: 'text-sm',
   },
   ctrl: {
-    list: 'grid w-full grid-cols-2 gap-2 rounded-lg bg-base-200/50 p-2',
+    // 侧边栏那张卡片自己就是容器(CommonCtrl.vue,card p-3 = 12px 内边距),这里不再套底色也不再加内边距
+    list: 'grid w-full grid-cols-2 gap-2',
     item: 'flex items-start flex-col',
     label: 'text-xs text-base-content/70',
     value: 'text-sm',

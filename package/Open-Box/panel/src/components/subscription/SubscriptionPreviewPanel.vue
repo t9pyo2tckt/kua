@@ -62,7 +62,7 @@
               :key="`${item.name}-${index}`"
               class="truncate"
             >
-              {{ $t('subscriptionSkippedReason', { name: item.name, type: item.type }) }}
+              {{ skippedText(item) }}
             </li>
           </ul>
         </div>
@@ -105,7 +105,7 @@
             type="button"
             class="btn btn-sm"
             :disabled="!overrideCount"
-            :title="$t('subscriptionResetNamesHint', { count: overrideCount })"
+            v-tip="$t('subscriptionResetNamesHint', { count: overrideCount })"
             @click="emit('resetOverrides')"
           >
             <ArrowUturnLeftIcon class="h-4 w-4" />
@@ -117,7 +117,7 @@
             type="button"
             class="btn btn-sm"
             :disabled="testingAll || !preview.preview.length || !source"
-            :title="$t('subscriptionLatencyHint')"
+            v-tip="$t('subscriptionLatencyHint')"
             @click="testAll"
           >
             <span
@@ -133,7 +133,8 @@
         </div>
 
         <!-- The hero: original -> renamed mapping table -->
-        <div class="border-base-content/10 min-h-0 flex-1 overflow-hidden rounded-lg border">
+        <!-- app-plain-table:关掉连接表那层 tbody::before 毛玻璃,否则整张表的文字都会被糊掉 -->
+        <div class="app-plain-table border-base-content/10 min-h-0 flex-1 overflow-hidden rounded-lg border">
           <div
             v-if="rows.length === 0"
             class="text-base-content/50 p-4 text-center text-sm"
@@ -148,8 +149,10 @@
             <table class="table table-sm table-pin-rows">
               <thead>
                 <tr>
-                  <th class="w-1/2">{{ $t('subscriptionRenameOriginalColumn') }}</th>
-                  <th class="w-1/2">{{ $t('subscriptionRenameNewColumn') }}</th>
+                  <!-- 原名只是个参照,新名那一列要装下输入框 + 延迟 + 两颗图标,
+                       所以不再对半分:原名压到 1/3,省下的宽度全给输入框。 -->
+                  <th class="w-1/3">{{ $t('subscriptionRenameOriginalColumn') }}</th>
+                  <th>{{ $t('subscriptionRenameNewColumn') }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -157,18 +160,7 @@
                   v-for="(entry, index) in rows"
                   :key="`${entry.originalTag}-${index}`"
                 >
-                  <!-- 国旗放在原名前面:这一列是"节点本来叫什么",国别正是从它匹配出来的,
-                       两者摆在一起才看得出规则把这条判成了哪个国家。没匹配上的显示地球占位。 -->
-                  <td class="text-base-content/70 max-w-0 text-sm">
-                    <div class="flex items-center gap-1.5">
-                      <CountryFlag
-                        :code="entry.regionCode || ''"
-                        :size="16"
-                        :title="entry.regionCode || ''"
-                      />
-                      <span class="truncate">{{ entry.originalTag }}</span>
-                    </div>
-                  </td>
+                  <td class="text-base-content/70 max-w-0 truncate text-sm">{{ entry.originalTag }}</td>
                   <td class="max-w-0">
                     <!-- 过滤页签下这条根本不会导入,没有"新名"可言,也不该能改 -->
                     <span
@@ -189,7 +181,7 @@
                         type="button"
                         class="btn btn-ghost btn-square btn-sm ml-auto shrink-0 hover:text-success"
                         :aria-label="$t('subscriptionNodeEnable')"
-                        :title="$t('subscriptionNodeEnable')"
+                        v-tip="$t('subscriptionNodeEnable')"
                         @click="emit('toggleDisabled', { originalTag: entry.originalTag, disabled: false })"
                       >
                         <CheckCircleIcon class="h-4 w-4" />
@@ -200,6 +192,14 @@
                       class="flex items-center gap-1"
                     >
                       <ArrowRightIcon class="text-base-content/30 h-3 w-3 shrink-0" />
+                      <!-- 国旗跟着**新名**走:这一列才是最终写进配置的名字,国旗贴在它
+                           前面,一眼就是"这条节点是哪个国家的"。放在原名那列的话,中间
+                           隔着大半个表格,反而看不出对应关系。 -->
+                      <CountryFlag
+                        :code="entry.regionCode || ''"
+                        :size="16"
+                        :title="entry.regionCode || ''"
+                      />
                       <!-- 没在编辑这一行时,一律显示服务端算出来的最终名字:手工改过的
                            名字也可能被再加工(比如套上订阅名前缀),显示本地存的原始值
                            会和真正写进配置的名字对不上。
@@ -230,7 +230,7 @@
                         class="btn btn-ghost btn-square btn-sm shrink-0"
                         :disabled="testingAll || testing.has(entry.originalTag)"
                         :aria-label="$t('subscriptionLatencyTestOne')"
-                        :title="$t('subscriptionLatencyHint')"
+                        v-tip="$t('subscriptionLatencyHint')"
                         @click="testOne(entry.originalTag)"
                       >
                         <span
@@ -246,7 +246,7 @@
                         type="button"
                         class="btn btn-ghost btn-square btn-sm shrink-0 hover:text-error"
                         :aria-label="$t('subscriptionNodeDisable')"
-                        :title="$t('subscriptionNodeDisable')"
+                        v-tip="$t('subscriptionNodeDisable')"
                         @click="emit('toggleDisabled', { originalTag: entry.originalTag, disabled: true })"
                       >
                         <NoSymbolIcon class="h-4 w-4" />
@@ -264,7 +264,7 @@
 </template>
 
 <script setup lang="ts">
-import type { OpenboxLatencyResult, OpenboxRenameOptions, OpenboxSubscriptionPreview } from '@/api/openbox'
+import type { OpenboxLatencyResult, OpenboxRenameOptions, OpenboxSubscriptionPreview, OpenboxSkippedNode } from '@/api/openbox'
 import { testNodeLatency } from '@/api/openbox'
 import CountryFlag from '@/components/common/CountryFlag.vue'
 import {
@@ -285,7 +285,7 @@ const props = defineProps<{
   preview: OpenboxSubscriptionPreview | null
   overrides?: Record<string, string>
   // 测速要重新解析订阅,所以要把来源和当前规则一并带上
-  source?: { url?: string; content?: string; name?: string } | null
+  source?: { url?: string; urls?: string[]; content?: string; name?: string } | null
   renameOptions?: OpenboxRenameOptions
 }>()
 
@@ -298,6 +298,12 @@ const emit = defineEmits<{
 const overrideCount = computed(() => Object.keys(props.overrides || {}).length)
 
 const { t } = useI18n()
+// 跳过的条目按原因写:插件内核没有 / 字段不合法 / 类型不认识
+const skippedText = (item: OpenboxSkippedNode) => {
+  if (item.reason === 'unsupported-plugin') return t('subscriptionSkippedPlugin', { name: item.name, plugin: item.detail || '' })
+  if (item.reason === 'invalid') return t('subscriptionSkippedInvalid', { name: item.name, type: item.type, detail: item.detail || '' })
+  return t('subscriptionSkippedReason', { name: item.name, type: item.type })
+}
 
 const listTab = ref<'kept' | 'excluded' | 'disabled'>('kept')
 

@@ -69,17 +69,83 @@
 
         <div
           v-if="sourceMode === 'url'"
-          class="flex flex-col gap-1"
+          class="flex flex-col gap-2"
         >
-          <label class="text-xs font-medium">{{ $t('subscriptionUrlLabel') }}</label>
-          <input
-            v-model="url"
-            type="text"
-            class="input input-sm w-full"
-            placeholder="https://"
-            autocomplete="off"
-          />
+          <div class="flex items-center justify-between gap-2">
+            <label class="text-xs font-medium">{{ $t('subscriptionUrlLabel') }}</label>
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs"
+              @click="urls.push('')"
+            >
+              <PlusIcon class="h-3.5 w-3.5" />
+              {{ $t('subscriptionUrlAdd') }}
+            </button>
+          </div>
+          <!-- 一行一个地址:镜像、备用、几个机场合成一条都行,节点合在一起。行内的删除按钮
+               和目标分流的规则行是同一套写法。只剩一行时不能删——至少要留一个输入框。 -->
+          <div
+            v-for="index in urls.keys()"
+            :key="index"
+            class="flex items-center gap-2"
+          >
+            <input
+              v-model="urls[index]"
+              type="text"
+              class="input input-sm min-w-0 flex-1"
+              placeholder="https://"
+              autocomplete="off"
+            />
+            <button
+              type="button"
+              class="btn btn-ghost btn-square btn-sm"
+              :class="urls.length === 1 ? 'text-base-content/30 cursor-not-allowed' : 'hover:text-error'"
+              :disabled="urls.length === 1"
+              v-tip="$t('delete')"
+              :aria-label="$t('delete')"
+              @click="urls.splice(index, 1)"
+            >
+              <TrashIcon class="h-4 w-4" />
+            </button>
+          </div>
           <p class="text-base-content/50 text-xs">{{ $t('subscriptionUrlHint') }}</p>
+
+          <!-- 定期更新:每隔几天、几点自动重新拉取。控件和后端设置里 Geo / 自身升级的计划一样 -->
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2 pt-1">
+            <span class="text-xs font-medium">{{ $t('subscriptionAutoUpdate') }}</span>
+            <input
+              v-model="autoUpdate.enabled"
+              type="checkbox"
+              class="toggle toggle-sm"
+            />
+            <template v-if="autoUpdate.enabled">
+              <span class="text-base-content/70 text-sm">{{ $t('geoUpdateEvery') }}</span>
+              <select
+                v-model.number="autoUpdate.days"
+                class="select select-sm w-24"
+              >
+                <option
+                  v-for="d in [1, 2, 3, 7, 14, 30]"
+                  :key="d"
+                  :value="d"
+                >{{ $t('geoUpdateDays', { days: d }) }}</option>
+              </select>
+              <select
+                v-model.number="autoUpdate.hour"
+                class="select select-sm w-24"
+              >
+                <option
+                  v-for="h in 24"
+                  :key="h - 1"
+                  :value="h - 1"
+                >{{ String(h - 1).padStart(2, '0') }}:00</option>
+              </select>
+            </template>
+          </div>
+          <p
+            v-if="autoUpdate.enabled"
+            class="text-base-content/50 text-xs"
+          >{{ $t('subscriptionAutoUpdateHint') }}</p>
         </div>
 
         <div
@@ -128,12 +194,6 @@
     </div>
 
     <div class="mt-5 flex flex-col gap-2">
-      <p
-        v-if="saveErrorMessage"
-        class="text-error text-sm"
-      >
-        {{ saveErrorMessage }}
-      </p>
       <div class="flex justify-end gap-2">
         <button
           type="button"
@@ -160,10 +220,13 @@
 </template>
 
 <script setup lang="ts">
-import type { OpenboxRenameOptions, OpenboxSubscription, OpenboxSubscriptionPreview } from '@/api/openbox'
+import type { OpenboxRenameOptions, OpenboxSubscription, OpenboxSubscriptionAutoUpdate, OpenboxSubscriptionPreview } from '@/api/openbox'
 import { createSubscription, previewSubscription, updateSubscription } from '@/api/openbox'
 import DialogWrapper from '@/components/common/DialogWrapper.vue'
+import { PlusIcon, TrashIcon } from '@heroicons/vue/24/outline'
 import { debounce } from 'lodash'
+import { showNotification } from '@/helper/notification'
+import { notifySubscriptionSaved } from '@/store/openboxSubscriptions'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import RenameRulesEditor from './RenameRulesEditor.vue'
@@ -189,7 +252,8 @@ const sourceModes: { key: SourceMode; label: string }[] = [
   { key: 'paste', label: 'subscriptionTabNodes' },
 ]
 // 编辑已有订阅时,按它到底是"有链接"还是"粘贴来的"决定初始模式
-const sourceMode = ref<SourceMode>(props.subscription && !props.subscription.url ? 'paste' : 'url')
+const hasUrlSource = (s?: OpenboxSubscription | null) => Boolean(s?.url || s?.urls?.length)
+const sourceMode = ref<SourceMode>(props.subscription && !hasUrlSource(props.subscription) ? 'paste' : 'url')
 const isEditing = computed(() => Boolean(props.subscription))
 
 const tabs: { key: DialogTab; label: string }[] = [
@@ -203,8 +267,21 @@ const activeTab = ref<DialogTab>('source')
 // isOpen 已经是 true,而 watch(isOpen) 不是 immediate —— 它一次都不会触发,字段
 // 会停在空字符串上(实测:打开「修改订阅」名称和链接都是空的)。
 const name = ref(props.subscription?.name ?? '')
-const url = ref(props.subscription?.url ?? '')
+// 地址可以有多个;老记录只有 url。新建时给一个空输入框
+const initialUrls = () => {
+  const s = props.subscription
+  const list = s?.urls?.length ? s.urls : s?.url ? [s.url] : []
+  return list.length ? [...list] : ['']
+}
+const urls = ref<string[]>(initialUrls())
 const content = ref(props.subscription?.content ?? '')
+// 定期更新计划;默认关着,打开时默认每天 04:00
+const initialAutoUpdate = (): OpenboxSubscriptionAutoUpdate => ({
+  enabled: props.subscription?.autoUpdate?.enabled === true,
+  days: props.subscription?.autoUpdate?.days || 1,
+  hour: props.subscription?.autoUpdate?.hour ?? 4,
+})
+const autoUpdate = ref<OpenboxSubscriptionAutoUpdate>(initialAutoUpdate())
 
 const renameOptions = ref<OpenboxRenameOptions>({})
 const handleRenameOptionsChange = (value: OpenboxRenameOptions) => {
@@ -239,7 +316,6 @@ const preview = ref<OpenboxSubscriptionPreview | null>(null)
 const previewing = ref(false)
 const previewErrorMessage = ref('')
 const saving = ref(false)
-const saveErrorMessage = ref('')
 
 // content (when the paste-mode textarea is non-empty) wins over url — mirrors
 // server/api/subscriptions.mjs's resolveNodes priority, so what's shown in the preview panel is
@@ -251,15 +327,16 @@ const saveErrorMessage = ref('')
 // 预览里的前缀和保存后的不一样。
 const effectiveName = computed(() => name.value.trim() || t('subscriptionDefaultName'))
 
-const effectiveSource = computed<{ url?: string; content?: string; name?: string } | null>(() => {
+const effectiveSource = computed<{ urls?: string[]; content?: string; name?: string } | null>(() => {
   // 只有开了前缀,名字才影响解析结果;否则不带上,免得改个名字就重新拉一次订阅。
   const withName = renameOptions.value.usePrefix ? { name: effectiveName.value } : {}
   if (sourceMode.value === 'paste') {
     const trimmedContent = content.value.trim()
     return trimmedContent ? { content: trimmedContent, ...withName } : null
   }
-  const trimmedUrl = url.value.trim()
-  return trimmedUrl ? { url: trimmedUrl, ...withName } : null
+  // 空行和重复的地址不算;顺序保留,服务端拿第一条当老字段 url
+  const list = [...new Set(urls.value.map((u) => u.trim()).filter(Boolean))]
+  return list.length ? { urls: list, ...withName } : null
 })
 const hasSource = computed(() => effectiveSource.value !== null)
 
@@ -319,16 +396,16 @@ const resetForm = () => {
   activeTab.value = 'source'
   // 编辑模式下用现存值预填;新建时清空
   name.value = props.subscription?.name ?? ''
-  url.value = props.subscription?.url ?? ''
+  urls.value = initialUrls()
+  autoUpdate.value = initialAutoUpdate()
   content.value = props.subscription?.content ?? ''
   overrides.value = { ...(props.subscription?.renameOptions?.overrides || {}) }
   disabledTags.value = [...(props.subscription?.renameOptions?.disabled || [])]
-  sourceMode.value = props.subscription && !props.subscription.url ? 'paste' : 'url'
+  sourceMode.value = props.subscription && !hasUrlSource(props.subscription) ? 'paste' : 'url'
   preview.value = null
   previewing.value = false
   previewErrorMessage.value = ''
   saving.value = false
-  saveErrorMessage.value = ''
 }
 
 watch(isOpen, (open) => {
@@ -343,7 +420,6 @@ const handleSave = async () => {
   if (saving.value || !canSave.value) return
 
   saving.value = true
-  saveErrorMessage.value = ''
 
   try {
     // 保存哪一路由当前模式决定,和预览用的是同一个来源
@@ -351,17 +427,20 @@ const handleSave = async () => {
       ...(effectiveSource.value || {}),
       name: effectiveName.value,
       renameOptions: effectiveRenameOptions.value,
+      // 粘贴来的订阅没有地址可回源,计划一律关
+      autoUpdate: sourceMode.value === 'url' ? autoUpdate.value : { enabled: false, days: 1, hour: 4 },
     }
-    if (props.subscription) {
-      await updateSubscription(props.subscription.id, payload)
-    } else {
-      await createSubscription(payload)
-    }
+    const res = props.subscription
+      ? await updateSubscription(props.subscription.id, payload)
+      : await createSubscription(payload)
     emit('saved')
     isOpen.value = false
+    notifySubscriptionSaved(res.changed)
   } catch (error) {
-    saveErrorMessage.value = t('subscriptionSaveFailed', {
-      message: error instanceof Error ? error.message : String(error),
+    showNotification({
+      content: 'subscriptionSaveFailed',
+      type: 'alert-error',
+      params: { message: error instanceof Error ? error.message : String(error) },
     })
   } finally {
     saving.value = false

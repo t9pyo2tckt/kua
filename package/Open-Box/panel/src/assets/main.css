@@ -55,6 +55,22 @@ html.apple-mobile-ui {
   @apply bg-transparent! shadow-none! backdrop-blur-none!;
 }
 
+/* 页面级滚动容器一律常驻滚动条。没有它的话,内容多到出现滚动条的那一页会比不出现
+   的那一页窄十二像素,页签之间来回切整块内容就横向跳一下(订阅/节点组两个页签之间
+   最明显)。
+   用 overflow-y: scroll 而不是 scrollbar-gutter:「代理」页(ProxiesPage)一直就是
+   这么写的,那一页的观感正是要对齐的目标——轨道背景是透明的,不滚动时看不见东西,
+   内容也一直贴到滚动条边上,不会像 gutter 那样在内容和滚动条之间多留一条。
+   选择器挑的是「页面骨架」那一层:所有视图的滚动容器都是
+   `min-h-0 flex-1 overflow-x-hidden overflow-y-auto`(见 src/views/*.vue),以后
+   新加的页面照这个骨架写就自动有了。卡片里 max-h-* 的小列表不带 flex-1,不受影响。
+   只挑页面那一层:HomePage 外面还套着一个 .scrollable-parent(同样是 overflow-y-auto),
+   桌面端它根本不滚。之前把它也算进来,结果两层各占一条滚动条的宽度——外层那条是空的、
+   看不见,却把里层的滚动条往左顶了十几像素,右边就露出一条白边。就是那条白边。 */
+#app-content .flex-1.overflow-y-auto {
+  overflow-y: scroll;
+}
+
 #app-content .card,
 #app-content .collapse,
 #app-content .rounded-lg {
@@ -114,6 +130,11 @@ html.apple-mobile-ui {
 }
 
 #app-content .sidebar .menu li > * {
+  border-radius: var(--app-radius-nav, 0.875rem) !important;
+}
+
+/* 侧边栏底部的启动 / 停止 / 重启:圆角和上面的菜单项一个变量,折叠时一列看着才是一套 */
+#app-content .kernel-action-btn {
   border-radius: var(--app-radius-nav, 0.875rem) !important;
 }
 
@@ -187,7 +208,30 @@ html.apple-mobile-ui {
   border-radius: var(--app-radius-compact, 0.4rem) !important;
 }
 
-#app-content .proxy-domain-group-dropdown {
+/* 拖拽排序进行中(SortableJS 在按住的那一项上加 sortable-chosen,松手才去掉)整页禁止
+   选中文字:列表都用的是 force-fallback(鼠标事件模拟拖拽,不走浏览器原生 DnD),拖动时
+   指针扫过的文字会像普通拖选一样被选中,一路高亮。 */
+body:has(.sortable-chosen),
+body:has(.sortable-chosen) * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* 状态小标签(components/common/StatusBadge.vue):开 = 浅绿底绿字,关 = 浅红底红字。
+   !important 是为了压过上面 custom-background 里把所有 .badge 刷成 base-200 的规则。 */
+.status-badge.status-on {
+  background-color: color-mix(in srgb, var(--color-success) 18%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-success) 30%, transparent) !important;
+  color: var(--color-success) !important;
+}
+.status-badge.status-off {
+  background-color: color-mix(in srgb, var(--color-error) 15%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-error) 30%, transparent) !important;
+  color: var(--color-error) !important;
+}
+
+/* 悬浮下拉层:不跟着「背景透明度」变透明,永远实底 */
+.app-popover {
   background-color: var(--color-base-100) !important;
   background-image: none !important;
   backdrop-filter: none !important;
@@ -444,8 +488,24 @@ html.apple-mobile-ui {
   }
 }
 
+/* 简单数据表(概览 · 每日流量明细这类):不要连接表那套毛玻璃。上面 blur-intensity 给
+   .table tbody::before 加的绝对定位模糊层会盖在文字上,没有 sticky 单元格把内容抬起来的
+   表格整张会被糊掉;偶数行的半透明底色也一并去掉,行与行只靠分割线区分。 */
+#app-content .app-plain-table .table tbody::before {
+  content: none !important;
+}
+#app-content .app-plain-table .table thead {
+  backdrop-filter: none !important;
+}
+#app-content .app-plain-table .table tbody tr:nth-child(even) {
+  background: transparent !important;
+}
+
 .tippy-box {
   @apply bg-neutral text-neutral-content z-[9999] whitespace-pre-line shadow-none;
+  /* 圆角跟全局圆角设置走,用和卡片同一档(--app-radius-box,全局圆角 × 0.85),不用 tippy 自带
+     的 4px。tippy 自己的样式表不分层、加载顺序也不一定在前,所以和上面那些圆角规则一样加 !important */
+  border-radius: var(--app-radius-box, 0.85rem) !important;
 }
 .tippy-box[data-placement^='top'] > .tippy-arrow:before {
   @apply border-t-neutral;
@@ -540,16 +600,16 @@ div::-webkit-scrollbar-track {
   background: transparent;
 }
 
+/* 滑块铺满整条轨道:原来给了 2px 透明边 + background-clip: content-box,滑块只有
+   8px 宽、两边各空 2px,看上去就是"滚动条没贴到边框上"。去掉这层内缩,右边紧贴
+   边框——上游 zashboard 用的是 scrollbar-thin,同样没有这种内缩。 */
 div::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--color-base-content) 35%, transparent);
   border-radius: 9999px;
-  border: 2px solid transparent;
-  background-clip: content-box;
 }
 
 div::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--color-base-content) 55%, transparent);
-  background-clip: content-box;
 }
 
 .text-main {
@@ -729,6 +789,17 @@ div::-webkit-scrollbar-thumb:hover {
   padding: var(--app-space, 0.5rem) !important;
 }
 
+/* 卡片内部的留白:全站统一 16px(和代理卡片的 collapse-title、设置卡片的 p-4 一致),
+   小屏 12px。app-card-padding(8px)只给工具栏、列表外框、表格外框这类"容器"用。 */
+.app-card-inset {
+  padding: 1rem !important;
+}
+@media (max-width: 767px) {
+  .app-card-inset {
+    padding: 0.75rem !important;
+  }
+}
+
 .app-inline-gap {
   gap: var(--app-space, 0.5rem) !important;
 }
@@ -770,4 +841,19 @@ div::-webkit-scrollbar-thumb:hover {
       @apply inline-block;
     }
   }
+}
+
+/* 侧边栏的产品标识:图片本身是给浅色底做的(深藏青墨迹 + 绿橙点缀)。深色主题(forest)
+   下整体反相再转 180 度色相——这是给深色模式翻图的老办法:深墨迹变浅,绿橙两个点缀色
+   转一圈基本回到原样(实测 #EC6837 → #EA6635)。 */
+/* 暗色主题下把自定义背景图压暗:面板本身已经是深色半透明,亮堂堂的图片垫在下面
+   会把整页衬得刺眼、文字也不好读。用 multiply 和一层半透明黑混合,图片整体暗下去,
+   不动内联的 background-image,亮色主题不受影响。 */
+[data-theme='forest'] .custom-background {
+  background-color: rgb(0 0 0 / 0.65);
+  background-blend-mode: multiply;
+}
+
+[data-theme='forest'] .app-logo {
+  filter: invert(1) hue-rotate(180deg);
 }

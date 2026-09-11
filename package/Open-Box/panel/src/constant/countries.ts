@@ -72,10 +72,50 @@ export const COUNTRIES: Country[] = [
   { code: 'NZ', zh: '新西兰', tw: '紐西蘭', en: 'New Zealand', keywords: ['nz', 'new', '新西兰', '紐西蘭', 'new zealand', '奥克兰'] },
 ]
 
+// 不属于任何国家的图标:节点组常有「所有-自动」「回国」这种跨地区的组,给它们配一面
+// 国旗都不对。值统一带 globe: 前缀,和两位国家代码天然分得开(见 CountryFlag)。
+// 前四个是线条风格(heroicons,跟界面上别的图标同一套),后四个是彩色的(Twemoji,
+// 见 src/assets/globes/README)。并列给出来,想要哪种风格都有。
+export const GLOBE_ICONS = [
+  'globe:generic',
+  'globe:asia',
+  'globe:europe',
+  'globe:americas',
+  'globe:earth-meridians',
+  'globe:earth-asia',
+  'globe:earth-europe',
+  'globe:earth-americas',
+] as const
+export type GlobeIcon = (typeof GLOBE_ICONS)[number]
+
+// 大小写都认:值是存在数据库里的,历史记录里可能有大写的(早期服务端把图标一律
+// 转成大写,把 globe:asia 变成了 GLOBE:ASIA)。
+export const isGlobeIcon = (value: string): boolean => /^globe:/i.test(String(value || ''))
+
+// i18n 键:globeIcon_generic / globeIcon_asia / ...
+export const globeIconKey = (value: string): string =>
+  `globeIcon_${String(value).slice('globe:'.length).toLowerCase()}`
+
+// 「自动分组」弹窗默认摆上的几个:机场订阅里最常见的那批。不按"当前有没有节点"
+// 来挑——动态组本来就是给"以后也会有"准备的,某个国家现在没节点不代表以后没有。
+export const AUTO_GROUP_DEFAULT_COUNTRIES = ['HK', 'TW', 'SG', 'JP', 'KR', 'US']
+
 const BY_CODE = new Map(COUNTRIES.map((c) => [c.code, c]))
 
 export const findCountry = (code: string): Country | undefined =>
   BY_CODE.get(String(code || '').toUpperCase())
+
+// 按显示名反查。用来救老档案:国家代码这个字段以前存的是行号(那时它不表示国家),
+// 认不出代码时退回按名字认——存的名字就是「香港」「美国」这些,正好是下面这张表的键。
+const BY_NAME = new Map<string, Country>()
+for (const c of COUNTRIES) {
+  for (const n of [c.zh, c.tw, c.en]) {
+    const key = n.toLowerCase()
+    if (!BY_NAME.has(key)) BY_NAME.set(key, c)
+  }
+}
+export const findCountryByName = (name: string): Country | undefined =>
+  BY_NAME.get(String(name || '').trim().toLowerCase())
 
 // 按当前语言取显示名。locale 取值见 src/i18n('zh-CN' / 'zh-TW' / 'en')。
 export const countryName = (c: Country, locale: string): string => {

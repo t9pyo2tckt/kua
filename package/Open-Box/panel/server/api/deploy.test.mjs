@@ -5,6 +5,7 @@ import { registerDeployRoutes } from './deploy.mjs'
 import { createStore } from '../store/openbox-store.mjs'
 import { createMockContext } from '../system/context.mjs'
 import { createPaths } from '../system/paths.mjs'
+import { TUN_DEVICE } from '../system/deploy.mjs'
 
 const memStore = () => {
   const m = new Map()
@@ -21,7 +22,7 @@ const cmds = (ctx) => ctx.calls.map((c) => [c.cmd, ...c.args].join(' '))
 // 内核 status 默认视为 running,方便"成功路径"测试;各测试按需通过 over 覆盖具体命令的结果。
 // paths.singbox 默认存在,否则 deployConfig 重启前的预检(Important 4)会先拦截。
 const okCtx = (over = {}) => createMockContext({
-  files: { [paths.singbox]: '#!/bin/sh\n' },
+  files: { [paths.singbox]: '#!/bin/sh\n', [TUN_DEVICE]: '' },
   execResults: {
     '/etc/init.d/openbox status': { code: 0, stdout: 'running' },
     ...over,
@@ -64,7 +65,8 @@ test('GET /api/openbox/config/preview 返回组装好的配置,不落盘', async
     const body = await res.json()
     assert.ok(body.config)
     assert.ok(Array.isArray(body.config.outbounds))
-    assert.ok(body.config.outbounds.some((o) => o.tag === 'PROXY'))
+    // 兜底站点集「其他」是配置里恒有的 selector(以前是自动生成的 PROXY,已退役)
+    assert.ok(body.config.outbounds.some((o) => o.tag === '其他' && o.type === 'selector'))
     assert.equal(ctx.writes.length, 0) // 仅返回,不落盘
     assert.equal(ctx.calls.length, 0) // 不触碰系统(不调 exec)
   } finally {
@@ -81,7 +83,8 @@ test('GET /api/openbox/config/preview 用 store 中现存节点组装分组', as
     const res = await fetch(`${baseUrl}/api/openbox/config/preview`)
     const body = await res.json()
     assert.ok(body.config.outbounds.some((o) => o.tag === 'HK-01'))
-    assert.ok(body.config.outbounds.some((o) => o.tag === 'HK' && o.type === 'urltest'))
+    // 按国家自动分的 urltest 组已退役:节点组只有用户自己建的那些
+    assert.ok(!body.config.outbounds.some((o) => o.tag === 'HK'))
   } finally {
     await close()
   }
@@ -176,7 +179,10 @@ test('POST /api/openbox/deploy 冲突路径 → 409,未写任何文件,不 enabl
 
     assert.equal(ctx.writes.length, 0) // 未写任何配置
     assert.equal(store.getDeployState().stage, 'conflict')
-    assert.ok(!cmds(ctx).some((c) => c.includes('enable') || c.includes('disable')))
+    // 失败且内核没在跑(这里没 mock status → 视为没跑)→ 和「停止」一样关掉开机自启,
+    // 不能留着一份没验证过的配置等下次开机被 procd 拉起
+    assert.ok(!cmds(ctx).some((c) => c.includes('/etc/init.d/openbox enable')))
+    assert.ok(cmds(ctx).some((c) => c.includes('/etc/init.d/openbox disable')))
   } finally {
     await close()
   }
@@ -197,8 +203,28 @@ test('POST /api/openbox/deploy 校验失败 → 409,给 badTags,不写正式配�
 
     assert.ok(!ctx.writes.some((w) => w.path === paths.configPath)) // 未写正式配置
     assert.ok(!cmds(ctx).some((c) => c.includes('/etc/init.d/openbox restart')))
-    assert.ok(!cmds(ctx).some((c) => c.includes('enable') || c.includes('disable')))
+    // 失败且内核没在跑(这里没 mock status → 视为没跑)→ 和「停止」一样关掉开机自启,
+    // 不能留着一份没验证过的配置等下次开机被 procd 拉起
+    assert.ok(!cmds(ctx).some((c) => c.includes('/etc/init.d/openbox enable')))
+    assert.ok(cmds(ctx).some((c) => c.includes('/etc/init.d/openbox disable')))
     assert.equal(store.getDeployState().stage, 'validate')
+  } finally {
+    await close()
+  }
+})
+
+test('POST /api/openbox/deploy 校验失败但旧内核还在跑(比如点的是重启)→ 不动开机自启', async () => {
+  const ctx = createMockContext({
+    defaultExec: { code: 1, stderr: 'FATAL: unknown method: x' },
+    execResults: { '/etc/init.d/openbox status': { code: 0, stdout: 'running' } },
+  })
+  const store = memStore()
+  store.setNodes([BAD_NODE])
+  const { baseUrl, close } = await startApp(ctx, store)
+  try {
+    const res = await fetch(`${baseUrl}/api/openbox/deploy`, { method: 'POST' })
+    assert.equal(res.status, 409)
+    assert.ok(!cmds(ctx).some((c) => c.includes('/etc/init.d/openbox enable') || c.includes('/etc/init.d/openbox disable')))
   } finally {
     await close()
   }
@@ -206,7 +232,7 @@ test('POST /api/openbox/deploy 校验失败 → 409,给 badTags,不写正式配�
 
 test('POST /api/openbox/deploy 重启失败 → 500,回滚命令出现,disable 内核开机自启', async () => {
   const ctx = createMockContext({
-    files: { [paths.singbox]: '#!/bin/sh\n' },
+    files: { [paths.singbox]: '#!/bin/sh\n', [TUN_DEVICE]: '' },
     execResults: {
       '/etc/init.d/openbox restart': { code: 1, stderr: 'start failed' },
     },
@@ -232,7 +258,7 @@ test('POST /api/openbox/deploy 重启失败 → 500,回滚命令出现,disable �
 
 test('POST /api/openbox/deploy 启动后未 running(verify 阶段)→ 500,同样 disable', async () => {
   const ctx = createMockContext({
-    files: { [paths.singbox]: '#!/bin/sh\n' },
+    files: { [paths.singbox]: '#!/bin/sh\n', [TUN_DEVICE]: '' },
     execResults: { '/etc/init.d/openbox status': { code: 1, stdout: 'inactive' } },
   })
   const { baseUrl, close } = await startApp(ctx)
@@ -309,14 +335,50 @@ test('POST /api/openbox/rollback → 恢复直连并 disable 内核开机自启'
   }
 })
 
-test('POST /api/openbox/rollback 即使命令全失败也不抛(尽力而为),仍返回 ok:true', async () => {
-  const ctx = createMockContext({ defaultExec: { code: 1 } })
+test('POST /api/openbox/rollback 命令全失败:不抛、200,但 ok:false 且逐步列出失败(含关自启)', async () => {
+  const ctx = createMockContext({ defaultExec: { code: 1, stderr: 'boom' } })
   const { baseUrl, close } = await startApp(ctx)
   try {
     const res = await fetch(`${baseUrl}/api/openbox/rollback`, { method: 'POST' })
     assert.equal(res.status, 200)
     const body = await res.json()
-    assert.equal(body.ok, true)
+    assert.equal(body.ok, false)
+    assert.deepEqual(body.actions, [])
+    assert.deepEqual(body.failures.map((f) => f.step), ['stop-core', 'restore-dns', 'remove-firewall', 'disable-autostart'])
+  } finally {
+    await close()
+  }
+})
+
+// 有一类错误 `sing-box check` 查不出来、进程起来之后才 FATAL,procd 随即把它拉起来
+// 形成死循环。只看第一眼正好撞上"刚起来还没死"的瞬间,会报成"启动成功"。
+test('POST /api/openbox/deploy 起来之后又死了(死循环)→ verify 失败,带上内核最后那句 FATAL', async () => {
+  const statuses = [
+    { code: 0, stdout: 'running' }, // 第一眼:刚起来
+    { code: 1, stdout: 'not running' }, // 等几秒再看:已经崩了
+  ]
+  const ctx = okCtx({
+    '/etc/init.d/openbox status': () => statuses.shift() || { code: 1, stdout: 'not running' },
+    'logread -e sing-box': {
+      code: 0,
+      stdout: [
+        'Wed Sep  2 20:28:50 2026 daemon.err sing-box[18171]: \u001b[31mFATAL\u001b[0m[0000] start service: start dns/udp[dns-direct]: detour to an empty direct outbound makes no sense',
+        'Wed Sep  2 20:29:29 2026 daemon.info procd: Instance openbox::openbox s in a crash loop',
+      ].join('\n'),
+    },
+  })
+  const { baseUrl, store, close } = await startApp(ctx)
+  try {
+    const res = await fetch(`${baseUrl}/api/openbox/deploy`, { method: 'POST' })
+    assert.equal(res.status, 500)
+    const body = await res.json()
+    assert.equal(body.ok, false)
+    assert.equal(body.stage, 'verify')
+    // 界面上看到的是内核自己那句话,不是笼统的"未在运行"
+    assert.match(body.message, /detour to an empty direct outbound/)
+    assert.ok(!body.message.includes('\u001b'), '终端色码要去掉')
+    assert.equal(store.getDeployState().stage, 'verify')
+    assert.ok(cmds(ctx).includes('/etc/init.d/openbox disable'))
   } finally {
     await close()
   }

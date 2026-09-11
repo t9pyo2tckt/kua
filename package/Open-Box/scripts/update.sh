@@ -50,7 +50,10 @@ set -eu
 
 REPO="liandu2024/Open-Box"
 INSTALL_ROOT="/opt/open-box"
-MIN_FREE_KB=$((512 * 1024))
+# 升级要在安装目录所在分区暂存一份新的(两阶段换文件,新旧并存才能原子切换),装好的一份
+# 约 213MB,所以升级本身只需要约 213MB 空闲——不是安装那个 512MB(那是"装完还要留得下
+# 以后升级"的总量)。以前照抄 512MB 把只剩 495MB 的用户挡在升级门外(GitHub #11)。
+MIN_FREE_KB=$((300 * 1024))
 # /tmp 通常是 tmpfs(内存),这里只放下载下来的压缩包(实测约 78MB),留出安全余量;
 # 解包目标不在这里(见下方 Important 3),所以这个阈值不需要覆盖解包后的体积。
 MIN_TMP_DOWNLOAD_KB=$((100 * 1024))
@@ -93,6 +96,8 @@ write_status() {
     echo "total=$_ws_total"
     echo "message=$_ws_message"
   } > "$_ws_tmp" 2>/dev/null && mv -f "$_ws_tmp" "$STATUS_PATH" 2>/dev/null
+  # /tmp 被下载顶满时这里会失败:状态没更新是小事,set -e 把 worker 无声杀掉才是大事
+  return 0
 }
 
 # 读状态文件里某一个字段的值(取第一处匹配),供 --cancel 判断当前阶段/PID 用。
@@ -127,15 +132,26 @@ safe_rm_rf() {
   rm -rf -- "$target"
 }
 
-# 供 --probe 计时用:尽量取毫秒精度(date +%s%N,取纳秒后截到毫秒),取不到就退化
-# 成秒级精度(部分精简 date 实现不支持 %N,会把 "%N" 原样输出而不是数字——这里靠
-# 结果里混有非数字字符来识别退化情况,末尾补三个 0 凑成毫秒量级,不让计时失败拖垮
-# 整个探测)。
+# 供 --probe 计时用,毫秒。首选 /proc/uptime:第一列是开机以来的秒数、带两位小数
+# (10ms 精度),任何 Linux 都有,busybox awk 就能算,不依赖 date 的实现。
+# 以前只用 date +%s%N:OpenWrt 自带的 busybox date 不支持 %N,而且不是原样输出
+# "%N"、是直接吞掉——得到的是纯数字的秒数,识别不出退化,再除以一百万就成了 1788,
+# 前后两次相减永远是 0,LuCI 渠道检测于是每个渠道都显示「可用 0ms」(正式路由器
+# 实测;开发路由器装的是 coreutils 的 date 所以看不出来)。date 只当没有 /proc 的
+# 后备(开发机 macOS):%s%N 出来的要至少 16 位数字才当纳秒,否则按秒 ×1000。
 now_ms() {
+  if [ -r /proc/uptime ]; then
+    t=$(awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime 2>/dev/null)
+    case "$t" in
+      ''|*[!0-9]*) ;;
+      *) echo "$t"; return ;;
+    esac
+  fi
   t=$(date +%s%N 2>/dev/null || echo '')
   case "$t" in
     ''|*[!0-9]*) date +%s000 ;;
-    *) echo $((t / 1000000)) ;;
+    ????????????????*) echo $((t / 1000000)) ;;
+    *) echo "${t}000" ;;
   esac
 }
 
@@ -165,8 +181,8 @@ fetch_to_stdout() {
 
 fetch_to_file() {
   case "$DOWNLOADER" in
-    curl) curl -fsSL -o "$2" "$1" ;;
-    wget) wget -q -O "$2" "$1" ;;
+    curl) curl -fsSL --connect-timeout 15 --max-time 300 -o "$2" "$1" ;;
+    wget) wget -q --timeout=60 -O "$2" "$1" ;;
   esac
 }
 
@@ -209,9 +225,7 @@ probe_content_length() {
         | awk '/^content-length:/{v=$2} END{if (v != "") print v}'
       ;;
     wget)
-      wget --spider -S --timeout=20 "$_pcl_url" 2>&1 \
-        | tr -d '\r' | tr 'A-Z' 'a-z' \
-        | awk '/content-length:/{v=$2} END{if (v != "") print v}'
+      # uclient-fetch 没有 -S,拿不到响应头;进度就没有百分比(只显示已下载字节数)
       ;;
   esac
 }
@@ -370,6 +384,13 @@ fi
 # 两两互斥;--detach 与 --probe/--cancel 也互斥(探测、取消都是同步的一次性调用,
 # 不存在"派生到后台"的意义)。
 DETACH=0
+# 期望装到的版本(tag)。面板发起升级时会把它探到的最新 tag 传进来(--expect),
+# 派生到后台的子进程通过环境变量接力。有它就下载带版本号的资产
+# (releases/download/<tag>/open-box-<tag>-linux-<arch>.tar.gz):每个版本 URL 唯一,
+# 加速镜像缓存了上一版同名的稳定资产也串不过来——2026-09-03 真机上就是这么栽的:
+# 面板说最新 v0.1.56,镜像给的却是缓存的 v0.1.55 包,校验文件也是同一份缓存,校验照过。
+# 没传的话自己直连 GitHub 探一次 tag,探不到再退回稳定资产名。
+EXPECT_VERSION="${OPENBOX_UPDATE_EXPECT:-}"
 # CHANNEL_OVERRIDE/CLI_MIRROR_PREFIX 的初始值优先从环境变量读回——这是 --detach
 # 派生后台子进程时,父进程把自己已经解析好的路线选择传给子进程的方式(实际赋值
 # 见下方 --detach 小节真正派生子进程的那一行)。子进程重新执行的是同一份脚本、
@@ -454,6 +475,16 @@ while [ $# -gt 0 ]; do
             ;;
         esac
       fi
+      ;;
+    --expect)
+      shift
+      [ $# -ge 1 ] || die "--expect 需要一个参数:期望升级到的版本 tag(例如 --expect v0.1.56)。"
+      EXPECT_VERSION="$1"
+      case "$EXPECT_VERSION" in
+        '') die "--expect 的值不能为空。" ;;
+        *[!A-Za-z0-9._-]*) die "--expect 的值包含非法字符(只允许字母、数字、. _ -):$EXPECT_VERSION" ;;
+      esac
+      shift
       ;;
     --probe)
       [ "$DETACH" = "0" ] || die "--probe 不能与 --detach 同时使用。"
@@ -620,6 +651,15 @@ if [ "$DETACH" = "1" ]; then
   # "stage=starting"(还没有 pid,子进程调度起来后会自己补上完整记录),避免
   # LuCI 轮询到的是上一次更新遗留的 done/failed/cancelled 状态;顺带清掉可能
   # 残留的取消标志,防止新这次更新一启动就被上一次的取消请求误伤。
+  # 已有一个活着的 worker 在跑就不再派第二个:两个 worker 会互删暂存目录、互写状态文件
+  _live_pid=$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$STATUS_PATH" 2>/dev/null | head -n 1)
+  _live_stage=$(sed -n 's/^stage=//p' "$STATUS_PATH" 2>/dev/null | head -n 1)
+  if [ -n "$_live_pid" ] && kill -0 "$_live_pid" 2>/dev/null; then
+    case "$_live_stage" in
+      done|failed|cancelled|"") ;;
+      *) die "已有一次更新在进行中(pid $_live_pid,阶段 $_live_stage),请等它结束或先取消。" ;;
+    esac
+  fi
   : > "$UPDATE_LOG" 2>/dev/null || true
   { echo "stage=starting"; } > "$STATUS_PATH" 2>/dev/null || true
   rm -f "$CANCEL_FLAG" 2>/dev/null || true
@@ -641,7 +681,7 @@ if [ "$DETACH" = "1" ]; then
     warn "$_detach_msg"
     exit 0
   fi
-  OPENBOX_UPDATE_CHANNEL_OVERRIDE="$CHANNEL_OVERRIDE" OPENBOX_UPDATE_MIRROR_PREFIX="$CLI_MIRROR_PREFIX" \
+  OPENBOX_UPDATE_CHANNEL_OVERRIDE="$CHANNEL_OVERRIDE" OPENBOX_UPDATE_MIRROR_PREFIX="$CLI_MIRROR_PREFIX" OPENBOX_UPDATE_EXPECT="$EXPECT_VERSION" OPENBOX_UPDATE_DISPATCHED=1 \
     setsid sh "$0" >"$UPDATE_LOG" 2>&1 </dev/null &
   info "升级已在后台启动,日志:$UPDATE_LOG"
   exit 0
@@ -702,7 +742,7 @@ check_storage() {
     ''|*[!0-9]*) die "无法检测可用存储空间(df 命令输出异常)。" ;;
   esac
   if [ "$kb" -lt "$MIN_FREE_KB" ]; then
-    die "可用存储不足:检测到约 $((kb / 1024))MB,升级至少需要 512MB 可用空间。"
+    die "可用存储不足:检测到约 $((kb / 1024))MB,升级至少需要 300MB 可用空间。"
   fi
 }
 
@@ -773,7 +813,20 @@ resolve_channel() {
 # 残留的取消标志:防止上一次更新遗留、没能及时清理的标志,把这一次刚启动的全新
 # 更新立刻取消掉。
 STATUS_PID=$$
-rm -f "$CANCEL_FLAG" 2>/dev/null || true
+# 单实例锁:mkdir 是原子的;锁里记 pid,持锁进程已死(OOM、断电后重启)就接管
+UPDATE_LOCK="$STATUS_PATH.lock"
+if ! mkdir "$UPDATE_LOCK" 2>/dev/null; then
+  _lock_pid=$(cat "$UPDATE_LOCK/pid" 2>/dev/null)
+  if [ -n "$_lock_pid" ] && kill -0 "$_lock_pid" 2>/dev/null; then
+    die "已有一次更新在进行中(pid $_lock_pid),请等它结束或先取消。"
+  fi
+  rm -rf "$UPDATE_LOCK" 2>/dev/null
+  mkdir "$UPDATE_LOCK" 2>/dev/null || die "无法创建更新锁 $UPDATE_LOCK。"
+fi
+echo "$$" > "$UPDATE_LOCK/pid" 2>/dev/null || true
+# 派发进程在 fork 之前已经清过一次取消标志;这里再清会把"派发到 worker 启动之间"到达的
+# 取消请求抹掉。只有前台直接执行(没有派发进程)才需要在这里清残留。
+[ "${OPENBOX_UPDATE_DISPATCHED:-0}" = "1" ] || rm -f "$CANCEL_FLAG" 2>/dev/null || true
 write_status starting "" "" ""
 
 info "预检..."
@@ -796,8 +849,32 @@ detect_downloader
 # 校验、解包都完成后才从 meta.json 读出来(见下方),所以"是否已是最新版本"的判断
 # 也相应挪到了解包之后——这是放弃 API 查询换来的必然代价:多了一次下载,但镜像通道
 # 从此能用。
-ASSET="open-box-linux-${ARCH}.tar.gz"
-ASSET_URL="https://github.com/$REPO/releases/latest/download/$ASSET"
+# 没给 --expect 就直连 GitHub 看一眼 releases/latest 的 302 指向哪个 tag(几十字节,
+# 8 秒超时;直连不通就算了)。拿到 tag 才能用带版本号的资产名。
+resolve_latest_tag() {
+  _rlt_url="https://github.com/$REPO/releases/latest"
+  case "$DOWNLOADER" in
+    curl) curl -sI --connect-timeout 8 --max-time 12 "$_rlt_url" 2>/dev/null ;;
+    # OpenWrt 自带的 wget 是 uclient-fetch,没有 -S / --max-redirect(错误会被吞掉,
+    # 静默退回稳定资产名,镜像缓存旧包的问题就回来了):改为跟着 302 把 releases/latest
+    # 的页面拉下来,从里面的 /releases/tag/<tag> 链接取版本号
+    # 页面里还有 /releases/tag/*name 这种模板链接,只认 v 开头的版本号
+    wget) wget -q -O - --timeout=12 "$_rlt_url" 2>/dev/null | sed -n 's|.*/releases/tag/\(v[0-9][0-9A-Za-z._-]*\).*|\1|p' | head -n 1 ;;
+  esac | sed -n 's/^[Ll]ocation: .*\/releases\/tag\/\(v[0-9][0-9A-Za-z._-]*\).*/\1/p; /^v[0-9][0-9A-Za-z._-]*$/p' | head -n 1
+}
+if [ -z "$EXPECT_VERSION" ]; then
+  EXPECT_VERSION=$(resolve_latest_tag)
+  case "$EXPECT_VERSION" in
+    *[!A-Za-z0-9._-]*) EXPECT_VERSION="" ;;
+  esac
+fi
+if [ -n "$EXPECT_VERSION" ]; then
+  ASSET="open-box-${EXPECT_VERSION}-linux-${ARCH}.tar.gz"
+  ASSET_URL="https://github.com/$REPO/releases/download/${EXPECT_VERSION}/$ASSET"
+else
+  ASSET="open-box-linux-${ARCH}.tar.gz"
+  ASSET_URL="https://github.com/$REPO/releases/latest/download/$ASSET"
+fi
 SHA_URL="$ASSET_URL.sha256"
 
 OLD_VERSION=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$INSTALL_ROOT/meta.json" 2>/dev/null | head -n 1)
@@ -862,6 +939,13 @@ cleanup() {
   if [ "${OPENBOX_UPDATE_RELOCATED:-0}" = "1" ]; then
     rm -f -- "$0"
   fi
+  # 文件已经换过、面板还没拉起来就走到这里(比如铺 LuCI 文件时 die 了):无论如何把面板
+  # 起来,用户至少还能进面板看到发生了什么;卡在"面板停着"是最糟的结局
+  if [ "${POST_SWAP:-0}" = "1" ] && [ "${PANEL_STARTED:-0}" != "1" ] && [ -x /etc/init.d/openbox-panel ]; then
+    /etc/init.d/openbox-panel start >/dev/null 2>&1 || true
+  fi
+  [ -n "${UPDATE_LOCK:-}" ] && rm -rf "$UPDATE_LOCK" 2>/dev/null
+  return 0
 }
 TMP_DL=$(mktemp -d "${TMPDIR:-/tmp}/open-box-update.XXXXXX") || die "无法创建临时目录。"
 trap cleanup EXIT INT TERM
@@ -956,6 +1040,9 @@ check_cancel_and_abort
 
 NEW_VERSION=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$STAGE_DIR/meta.json" 2>/dev/null | head -n 1)
 [ -n "$NEW_VERSION" ] || die "升级包的 meta.json 无法解析版本号。现有安装未改动。"
+if [ -n "$EXPECT_VERSION" ] && [ "$NEW_VERSION" != "$EXPECT_VERSION" ]; then
+  die "下载到的包是 $NEW_VERSION,不是期望的 $EXPECT_VERSION(镜像缓存了旧包?换「GitHub 直连」通道再试)。现有安装未改动。"
+fi
 if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   info "当前已是最新版本($OLD_VERSION),无需升级。"
   write_status done "" "" "已是最新版本,无需升级"
@@ -979,6 +1066,12 @@ fi
 write_status committing "" "" ""
 rm -f "$CANCEL_FLAG" 2>/dev/null || true
 
+# 记住内核此刻是否在跑:升级完把它按新版本重新生成配置再拉起来,不用用户再进面板点启动
+CORE_WAS_RUNNING=0
+if [ -x /etc/init.d/openbox ] && /etc/init.d/openbox status 2>/dev/null | grep -q running; then
+  CORE_WAS_RUNNING=1
+fi
+
 info "停止服务..."
 if [ -x /etc/init.d/openbox-panel ]; then
   /etc/init.d/openbox-panel stop >/dev/null 2>&1 || true
@@ -990,16 +1083,64 @@ if [ -x /etc/init.d/openbox ]; then
 fi
 
 info "替换 node/ panel/ bin/ openwrt/(保留 data/ 与 etc/)..."
-for comp in node panel bin openwrt; do
-  [ -e "$INSTALL_ROOT/$comp.old" ] && safe_rm_rf "$INSTALL_ROOT/$comp.old"
-  if [ -e "$INSTALL_ROOT/$comp" ]; then
-    mv "$INSTALL_ROOT/$comp" "$INSTALL_ROOT/$comp.old" || \
-      die "无法备份旧的 $comp,已停止升级。请检查磁盘空间与权限后重试(现有安装应仍完整,位于 $INSTALL_ROOT)。"
+# 换文件期间不响应 Ctrl-C / 关机的 TERM:这时 cleanup 一跑会把还没搬过去的组件连同暂存
+# 目录一起删掉,安装就成了半新半旧
+trap '' INT TERM
+POST_SWAP=1
+# ---- swap:begin ----
+# 两阶段替换 + 整体回退:
+#   1) 先把四个旧组件各自挪到 .old(全部挪完之前一个都不删);
+#   2) 再把四个新组件从暂存目录挪进来;
+#   3) init 脚本也铺完、确认都成功后,才统一删 .old(见下方 swap:end)。
+# 中途任何一步失败都整体回退:新的删掉、.old 挪回原位,现有安装回到升级前的样子。
+# 以前是换一个删一个 .old,第三个失败时前两个的旧版本已经没了,装置卡成半新半旧,
+# 只能手工修或重装。
+COMPONENTS="node panel bin openwrt"
+INITD_DIR="${OPENBOX_INITD_DIR:-/etc/init.d}"
+SWAPPED_NEW=""
+rollback_components() {
+  _rb_failed=""
+  for _rb in $COMPONENTS; do
+    # 新的可能已经挪进来、也可能挪到一半:只要它是这次挪进来的,先清掉
+    case " $SWAPPED_NEW " in
+      *" $_rb "*) [ -e "$INSTALL_ROOT/$_rb" ] && safe_rm_rf "$INSTALL_ROOT/$_rb" ;;
+    esac
+    if [ -e "$INSTALL_ROOT/$_rb.old" ]; then
+      mv "$INSTALL_ROOT/$_rb.old" "$INSTALL_ROOT/$_rb" || _rb_failed="$_rb_failed $_rb"
+    fi
+  done
+  # init 脚本铺到一半失败的话,已经铺进去的也要换回旧的;meta.json 同理
+  for _rb in openbox openbox-panel; do
+    if [ -e "$STAGE_DIR/initd-backup/$_rb" ]; then
+      cp "$STAGE_DIR/initd-backup/$_rb" "$INITD_DIR/$_rb" || _rb_failed="$_rb_failed initd:$_rb"
+    fi
+  done
+  if [ -e "$STAGE_DIR/initd-backup/meta.json" ]; then
+    cp "$STAGE_DIR/initd-backup/meta.json" "$INSTALL_ROOT/meta.json" || _rb_failed="$_rb_failed meta.json"
   fi
-  mv "$STAGE_DIR/$comp" "$INSTALL_ROOT/$comp" || \
-    die "替换 $comp 失败(可能是磁盘空间不足)。安装现处于不一致状态:请检查 $INSTALL_ROOT/$comp 与 $INSTALL_ROOT/$comp.old,必要时重新运行 update.sh。"
+  [ -z "$_rb_failed" ]
+}
+swap_failed() {
+  if rollback_components; then
+    die "$1 已把 node/ panel/ bin/ openwrt/ 与 init 脚本整体回退到升级前的版本,现有安装应仍完整($INSTALL_ROOT);请检查磁盘空间与权限后重试。"
+  fi
+  die "$1 回退时也失败了(没能挪回:$_rb_failed),安装现处于不一致状态:请检查 $INSTALL_ROOT 下各组件与对应的 .old 目录,必要时手工把 .old 挪回原名,或重新运行 update.sh。"
+}
+for comp in $COMPONENTS; do
   [ -e "$INSTALL_ROOT/$comp.old" ] && safe_rm_rf "$INSTALL_ROOT/$comp.old"
 done
+for comp in $COMPONENTS; do
+  if [ -e "$INSTALL_ROOT/$comp" ]; then
+    mv "$INSTALL_ROOT/$comp" "$INSTALL_ROOT/$comp.old" || swap_failed "无法备份旧的 $comp。"
+  fi
+done
+for comp in $COMPONENTS; do
+  SWAPPED_NEW="$SWAPPED_NEW $comp"
+  mv "$STAGE_DIR/$comp" "$INSTALL_ROOT/$comp" || swap_failed "替换 $comp 失败(可能是磁盘空间不足)。"
+done
+# meta.json 也留一份:回退后版本号要跟组件一致,不能旧组件挂着新版本号
+mkdir -p "$STAGE_DIR/initd-backup" || swap_failed "无法创建备份目录。"
+[ -e "$INSTALL_ROOT/meta.json" ] && { cp "$INSTALL_ROOT/meta.json" "$STAGE_DIR/initd-backup/meta.json" || swap_failed "无法备份 meta.json。"; }
 mv "$STAGE_DIR/meta.json" "$INSTALL_ROOT/meta.json" || warn "meta.json 替换失败,面板显示的版本号可能不准确,但不影响功能。"
 # uninstall.sh 随产物分发(LuCI 兜底页要调它),升级时一并刷新,免得留着旧版本的
 # 卸载逻辑去清理新版本铺下的东西。
@@ -1020,19 +1161,31 @@ fi
 chown -R 0:0 "$INSTALL_ROOT" || warn "重置 $INSTALL_ROOT 属主为 root 失败,可能不影响使用。"
 
 info "重新铺装 init 脚本与 LuCI 文件..."
-cp "$INSTALL_ROOT/openwrt/initd/openbox" /etc/init.d/openbox || die "无法安装 /etc/init.d/openbox。"
-cp "$INSTALL_ROOT/openwrt/initd/openbox-panel" /etc/init.d/openbox-panel || die "无法安装 /etc/init.d/openbox-panel。"
-chmod +x /etc/init.d/openbox /etc/init.d/openbox-panel
+# 先把现有 init 脚本存一份到暂存目录:铺到一半失败要连组件一起整体回退
+mkdir -p "$STAGE_DIR/initd-backup" || swap_failed "无法创建 init 脚本备份目录。"
+for _initd in openbox openbox-panel; do
+  if [ -e "$INITD_DIR/$_initd" ]; then
+    cp "$INITD_DIR/$_initd" "$STAGE_DIR/initd-backup/$_initd" || swap_failed "无法备份现有的 $INITD_DIR/$_initd。"
+  fi
+done
+cp "$INSTALL_ROOT/openwrt/initd/openbox" "$INITD_DIR/openbox" || swap_failed "无法安装 $INITD_DIR/openbox。"
+cp "$INSTALL_ROOT/openwrt/initd/openbox-panel" "$INITD_DIR/openbox-panel" || swap_failed "无法安装 $INITD_DIR/openbox-panel。"
+chmod +x "$INITD_DIR/openbox" "$INITD_DIR/openbox-panel"
+# 组件和 init 脚本都换好了,这才是删旧版本的时候
+for comp in $COMPONENTS; do
+  [ -e "$INSTALL_ROOT/$comp.old" ] && safe_rm_rf "$INSTALL_ROOT/$comp.old"
+done
+# ---- swap:end ----
 
-mkdir -p /www/luci-static/resources/view/openbox || die "无法创建 LuCI 视图目录。"
+mkdir -p /www/luci-static/resources/view/openbox || warn "无法创建 LuCI 视图目录(不影响面板本身,LuCI 页面可能是旧的)。"
 cp "$INSTALL_ROOT/openwrt/luci/htdocs/luci-static/resources/view/openbox/status.js" \
-  /www/luci-static/resources/view/openbox/status.js || die "无法安装 LuCI 视图文件。"
+  /www/luci-static/resources/view/openbox/status.js || warn "无法安装 LuCI 视图文件(不影响面板本身,LuCI 页面可能是旧的)。"
 
-mkdir -p /usr/share/luci/menu.d || die "无法创建 LuCI 菜单目录。"
+mkdir -p /usr/share/luci/menu.d || warn "无法创建 LuCI 菜单目录(不影响面板本身,LuCI 页面可能是旧的)。"
 cp "$INSTALL_ROOT/openwrt/luci/root/usr/share/luci/menu.d/luci-app-openbox.json" \
-  /usr/share/luci/menu.d/luci-app-openbox.json || die "无法安装 LuCI 菜单文件。"
+  /usr/share/luci/menu.d/luci-app-openbox.json || warn "无法安装 LuCI 菜单文件(不影响面板本身,LuCI 页面可能是旧的)。"
 
-mkdir -p /usr/share/rpcd/acl.d || die "无法创建 rpcd ACL 目录。"
+mkdir -p /usr/share/rpcd/acl.d || warn "无法创建 rpcd ACL 目录(不影响面板本身,LuCI 页面可能是旧的)。"
 # 先比对再覆盖:rpcd 只有在 ACL 真的变了时才需要重启,而重启 rpcd 会清空它内存里的
 # 全部 LuCI 会话——用户每升一次级就被踢回登录页(实测反馈:「更新之后,一定要重新
 # 登录?」)。ACL 文件多数升级里根本没动,那种情况不该付出重新登录的代价。
@@ -1042,7 +1195,7 @@ _acl_changed=0
 if [ ! -f "$_ACL_DST" ] || ! cmp -s "$_ACL_SRC" "$_ACL_DST"; then
   _acl_changed=1
 fi
-cp "$_ACL_SRC" "$_ACL_DST" || die "无法安装 rpcd ACL 文件。"
+cp "$_ACL_SRC" "$_ACL_DST" || warn "无法安装 rpcd ACL 文件(不影响面板本身,LuCI 页面可能是旧的)。"
 
 # 用 -rf 而不是 -f:OpenWrt <=22.03 的 Lua 版 LuCI 里 /tmp/luci-modulecache 是
 # 目录,rm -f 对目录返回非零,在 set -eu 下会直接中止脚本(P6 终审 Important 4)。
@@ -1056,10 +1209,37 @@ fi
 info "启动面板..."
 /etc/init.d/openbox-panel enable || warn "设置面板开机自启失败,可稍后在 LuCI → 服务 → Open-Box 中手动开启。"
 /etc/init.d/openbox-panel start || warn "面板启动命令返回了非零状态,请稍后访问面板地址确认;如不可用可到 LuCI → 服务 → Open-Box 中重试。"
+PANEL_STARTED=1
 
-write_status done "" "" "升级完成:$NEW_VERSION"
+# 升级前内核在跑 → 现在按新版本重新生成配置并启动,走面板同款流水线(panel/server/cli/
+# deploy.mjs:冲突检测 → 规则集 → 校验 → 落盘 → DNS 接管 → 防火墙 → 启动 → 验证)。
+# 绝不能退回 init 脚本直接起旧配置:停内核时 DNS 接管已被还原,不经流水线重新接管就把内核
+# 拉起来,dnsmasq 模式下路由器自己的 DNS 会在 dnsmasq 和内核之间打环、什么都解析不了
+# (开发路由器实测)。目标版本没有这个脚本(只会是降级到老版本)就保持停止,提示去面板点启动。
+CORE_MSG="内核未自动重启——如之前配置并运行着代理服务,请到面板重新启动它。"
+if [ "$CORE_WAS_RUNNING" = "1" ]; then
+  DEPLOY_CLI="$INSTALL_ROOT/panel/server/cli/deploy.mjs"
+  if [ -x "$INSTALL_ROOT/node/bin/node" ] && [ -f "$DEPLOY_CLI" ]; then
+    # 面板这时已经起来了,前端能重新读到状态文件:给内核重启单独一个阶段,否则弹窗
+    # 一直停在"正在替换文件,面板即将重启…",用户不知道后面还有一次内核重启(约 20 秒)。
+    write_status restarting_core "" "" "面板已重启,正在按新版本重新生成配置并启动内核"
+    info "升级前内核在运行,按新版本重新生成配置并启动内核..."
+    if OPENBOX_ROOT="$INSTALL_ROOT" ZASHBOARD_DB_PATH="$INSTALL_ROOT/data/openbox.sqlite" \
+       LD_LIBRARY_PATH="$INSTALL_ROOT/node/lib" "$INSTALL_ROOT/node/bin/node" "$DEPLOY_CLI" >/dev/null 2>&1; then
+      CORE_MSG="内核已按新版本重新生成配置并启动。"
+    else
+      warn "内核启动失败(配置生成或校验没通过),请到面板查看原因后重新启动。"
+      CORE_MSG="内核启动失败,请到面板查看原因后重新启动。"
+    fi
+  else
+    warn "这个版本没有自动启动内核的脚本,请到面板重新启动内核。"
+    CORE_MSG="这个版本没有自动启动内核的脚本,请到面板重新启动内核。"
+  fi
+fi
+
+write_status done "" "" "升级完成:$NEW_VERSION;$CORE_MSG"
 
 echo ""
 echo "Open-Box 已升级到 $NEW_VERSION。"
-echo "面板已重新启动;内核未自动重启——如之前配置并运行着代理服务,请到面板重新启动它。"
+echo "面板已重新启动;$CORE_MSG"
 echo ""

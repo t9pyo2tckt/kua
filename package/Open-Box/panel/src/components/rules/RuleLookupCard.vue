@@ -1,6 +1,6 @@
 <template>
   <div class="card">
-    <div class="app-card-padding flex flex-col gap-3 text-sm">
+    <div class="app-card-inset flex flex-col gap-3 text-sm">
       <div class="flex flex-wrap items-center gap-2">
         <span>{{ index }}.</span>
         <span class="text-main font-medium">
@@ -31,7 +31,7 @@
             <div class="min-w-0 flex-1 overflow-hidden text-sm">
               <ProxyGroupNow
                 v-if="showProxyRoute(rule.proxy)"
-                v-bind="{ name: rule.proxy, includeSelf: true, forceFullRoute: true }"
+                v-bind="{ name: rule.proxy, includeSelf: true }"
               />
               <ProxyName
                 v-else
@@ -40,7 +40,7 @@
               />
             </div>
             <span
-              v-if="getLatency(rule.proxy) !== NOT_CONNECTED && displayLatencyInRule"
+              v-if="getLatency(rule.proxy) !== NOT_CONNECTED"
               :class="getLatencyClass(rule.proxy)"
               class="ml-1 text-xs"
             >
@@ -96,9 +96,9 @@
 <script setup lang="ts">
 import { NOT_CONNECTED } from '@/constant'
 import { getColorForLatency } from '@/helper'
+import { copyText as copyToClipboard } from '@/helper/clipboard'
 import { showNotification } from '@/helper/notification'
 import { getLatencyByName, proxyMap } from '@/store/proxies'
-import { displayLatencyInRule, displayNowNodeInRule } from '@/store/settings'
 import type { Rule } from '@/types'
 import { DocumentDuplicateIcon } from '@heroicons/vue/24/outline'
 import { useI18n } from 'vue-i18n'
@@ -126,7 +126,7 @@ defineProps<{
 }>()
 
 const showProxyRoute = (proxyName: string) => {
-  return displayNowNodeInRule.value && Boolean(proxyMap.value[proxyName]?.now)
+  return Boolean(proxyMap.value[proxyName]?.now)
 }
 
 const getLatency = (proxyName: string) => {
@@ -138,36 +138,7 @@ const getLatencyClass = (proxyName: string) => {
 }
 
 const copyUrl = async (url: string) => {
-  try {
-    await navigator.clipboard.writeText(url)
-    showNotification({
-      content: 'copySuccess',
-      type: 'alert-success',
-      timeout: 1500,
-    })
-  } catch (error) {
-    console.warn('Failed to copy rule source url with navigator.clipboard, falling back', error)
-
-    const textArea = document.createElement('textarea')
-    textArea.value = url
-    textArea.setAttribute('readonly', 'readonly')
-    textArea.style.position = 'fixed'
-    textArea.style.opacity = '0'
-    document.body.appendChild(textArea)
-    textArea.select()
-
-    try {
-      document.execCommand('copy')
-      showNotification({
-        content: 'copySuccess',
-        type: 'alert-success',
-        timeout: 1500,
-      })
-    } catch (fallbackError) {
-      console.warn('Failed to copy rule source url with fallback', fallbackError)
-    } finally {
-      document.body.removeChild(textArea)
-    }
-  }
+  const ok = await copyToClipboard(url)
+  showNotification(ok ? { content: 'copySuccess', type: 'alert-success', timeout: 1500 } : { content: 'copyFailed', type: 'alert-error' })
 }
 </script>

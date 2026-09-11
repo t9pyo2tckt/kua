@@ -1,3 +1,5 @@
+import { kernelTestUrl } from '@/helper/testUrl'
+import { serviceStatus } from '@/composables/kernelService'
 import { showNotification } from '@/helper/notification'
 import { ACCESS_PASSWORD_REQUIRED_CODE, markServerAuthenticationRequired } from '@/store/auth'
 import { autoUpgradeCore, checkUpgradeCore } from '@/store/settings'
@@ -13,6 +15,17 @@ axios.interceptors.request.use((config) => {
 })
 
 const ignoreNotificationUrls = ['/delay', '/healthcheck', '/weights']
+
+const decodeRequestUrl = (url?: string) => {
+  if (!url) return ''
+
+  try {
+    return decodeURIComponent(url)
+  } catch {
+    // 单独的 % 之类的畸形转义会让 decodeURIComponent 抛错,那就原样显示
+    return url
+  }
+}
 
 axios.interceptors.response.use(
   null,
@@ -30,12 +43,23 @@ axios.interceptors.response.use(
       return Promise.reject(error)
     }
 
+    // 内核停着的时候,所有 clash API 请求都会失败,一条条弹出来只是噪音。两个信号任一命中就不弹:
+    // 1. 面板转发 clash API 连不上内核时回 502(server/index.mjs 的 proxyControllerRequest)——
+    //    页面一加载就发的那批请求,这时服务状态还没拉回来,靠这个判断;
+    // 2. 共享的服务状态已经说内核停了。
+    if (responseStatus === 502 || (serviceStatus.value && !serviceStatus.value.core.running)) {
+      return Promise.reject(error)
+    }
+
     if (!ignoreNotificationUrls.some((url) => error.config?.url?.endsWith(url))) {
       const errorMessage = error.response?.data?.message || error.message
+      // 请求路径里的组名 / 节点名是 encodeURIComponent 过的,原样弹出来就是一串
+      // %E6%96%B0%E5%8A%A0…。解码后再显示,用户才认得出是哪个组出的错。
+      const requestUrl = decodeRequestUrl(error.config?.url)
 
       showNotification({
         key: errorMessage,
-        content: `${error.config?.url} \n${errorMessage}`,
+        content: `${requestUrl} \n${errorMessage}`,
         type: 'alert-error',
       })
       return Promise.reject(error)
@@ -80,10 +104,11 @@ export const deleteFixedProxyAPI = (proxyGroup: string) => {
   return axios.delete(`/proxies/${encodeURIComponent(proxyGroup)}`)
 }
 
+// 三个延迟测试接口的 url 都先过 kernelTestUrl:内核对 http:// 的测速地址不认(会换成 gstatic 去测)
 export const fetchProxyLatencyAPI = (proxyName: string, url: string, timeout: number) => {
   return axios.get<{ delay: number }>(`/proxies/${encodeURIComponent(proxyName)}/delay`, {
     params: {
-      url,
+      url: kernelTestUrl(url),
       timeout,
     },
   })
@@ -99,7 +124,7 @@ export const fetchProxyProviderLatencyAPI = (
     `/providers/proxies/${encodeURIComponent(providerName)}/${encodeURIComponent(proxyName)}/healthcheck`,
     {
       params: {
-        url,
+        url: kernelTestUrl(url),
         timeout,
       },
     },
@@ -109,7 +134,7 @@ export const fetchProxyProviderLatencyAPI = (
 export const fetchProxyGroupLatencyAPI = (proxyName: string, url: string, timeout: number) => {
   return axios.get<Record<string, number>>(`/group/${encodeURIComponent(proxyName)}/delay`, {
     params: {
-      url,
+      url: kernelTestUrl(url),
       timeout,
     },
   })

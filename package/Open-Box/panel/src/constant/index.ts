@@ -13,7 +13,11 @@ import {
 export const IS_APPLE_DEVICE = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
 
 export const GLOBAL = 'GLOBAL'
+// 都是 https:内核的 clash API 不认 http 的测速地址(见 helper/testUrl.ts)
 export const TEST_URL = 'https://www.gstatic.com/generate_204'
+// 直连出站专用的测速地址。默认那个是 Google 的域名,从国内直连去测,量出来的是"直连到
+// Google 有多远",不是直连线路本身的质量。微软的 NCSI 地址国内外都能通、返回一小段文本。
+export const DIRECT_TEST_URL = 'https://connectivitycheck.platform.hicloud.com/generate_204'
 export const IPV6_TEST_URL = 'https://ipv6.google.com/generate_204'
 export const NOT_CONNECTED = 0
 export enum LANG {
@@ -202,14 +206,83 @@ export const DETAILED_CARD_STYLE = [
   ],
 ]
 
-// UI-facing appearance choice (P4b: converged to exactly three options).
-// Internally still maps onto the existing daisyUI 'light'/'dark' theme
-// names via config/default-theme + config/dark-theme + config/auto-theme.
-export enum THEME_MODE {
-  AUTO = 'auto',
-  LIGHT = 'light',
-  DARK = 'dark',
+export const ALL_THEME = [
+  'light',
+  'dark',
+  'light-legacy',
+  'dark-legacy',
+  'cupcake',
+  'bumblebee',
+  'emerald',
+  'corporate',
+  'synthwave',
+  'retro',
+  'cyberpunk',
+  'valentine',
+  'halloween',
+  'garden',
+  'forest',
+  'aqua',
+  'lofi',
+  'pastel',
+  'fantasy',
+  'wireframe',
+  'black',
+  'luxury',
+  'dracula',
+  'cmyk',
+  'autumn',
+  'business',
+  'acid',
+  'lemonade',
+  'night',
+  'coffee',
+  'winter',
+  'dim',
+  'nord',
+  'sunset',
+  'caramellatte',
+  'abyss',
+  'silk',
+]
+
+export const DEFAULT_THEME = {
+  name: 'custom',
+  id: '',
+  '--border': '1px',
+  '--color-base-100': '#ffffff',
+  '--color-base-200': '#fcfcfc',
+  '--color-base-300': '#f2f2f2',
+  '--color-base-content': '#2d2d33',
+  '--color-primary': '#5a3cd2',
+  '--color-primary-content': '#f3efff',
+  '--color-secondary': '#ea4c5a',
+  '--color-secondary-content': '#fff1f2',
+  '--color-accent': '#49c6c1',
+  '--color-accent-content': '#285e66',
+  '--color-neutral': '#1e1e1f',
+  '--color-neutral-content': '#ececec',
+  '--color-info': '#5b90ff',
+  '--color-info-content': '#273c66',
+  '--color-success': '#44c07a',
+  '--color-success-content': '#1d472f',
+  '--color-warning': '#e5a300',
+  '--color-warning-content': '#705322',
+  '--color-error': '#d13a30',
+  '--color-error-content': '#551d1d',
+  '--depth': '0',
+  '--noise': '0',
+  '--radius-box': '1rem',
+  '--radius-field': '0.5rem',
+  '--radius-selector': '1rem',
+  '--size-field': '0.25rem',
+  '--size-selector': '0.25rem',
+  'color-scheme': 'dark',
+  default: false,
+  prefersdark: false,
 }
+
+export type THEME = Record<string, string>
 
 export enum IP_INFO_API {
   IPSB = 'ip.sb',
@@ -223,8 +296,12 @@ export enum IP_INFO_API {
 export enum SETTINGS_TAB {
   panel = 'panel',
   subscriptions = 'subscriptions',
+  groups = 'groups',
   routing = 'routing',
+  clients = 'clients',
+  dns = 'dns',
   kernel = 'kernel',
+  share = 'share',
 }
 
 export enum SETTINGS_MENU_KEY {

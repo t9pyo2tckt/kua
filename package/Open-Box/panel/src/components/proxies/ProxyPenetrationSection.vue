@@ -1,10 +1,14 @@
 <template>
-  <div class="mt-2.5">
+  <!-- 成员里没有组可以往下穿(比如「节点」页签里的组,成员全是节点)就整个不显示,
+       不留一个灰掉的按钮 -->
+  <div
+    v-if="canPenetrate"
+    class="mt-2.5"
+  >
     <div class="flex flex-wrap items-center gap-3">
       <button
         class="proxy-penetration-toggle btn btn-sm min-w-24 gap-1.5"
         :class="isExpanded ? 'btn-neutral' : 'btn-outline'"
-        :disabled="!canPenetrate"
         @click="togglePenetration"
       >
         <span>{{ buttonLabel }}</span>
@@ -13,40 +17,6 @@
           :class="isExpanded && 'rotate-180'"
         />
       </button>
-      <div class="flex-1" />
-      <div
-        class="proxy-penetration-mode bg-base-200/80 inline-flex items-center gap-1 rounded-md p-1"
-        :class="!canPenetrate || !canSwitchMode ? 'opacity-60' : ''"
-      >
-        <button
-          class="proxy-penetration-mode-btn rounded-md px-3 py-1.5 text-sm leading-5 font-medium transition-colors"
-          :class="
-            !canPenetrate || !canSwitchMode
-              ? 'text-base-content/35 cursor-not-allowed'
-              : penetrationMode === 'stepwise'
-                ? 'bg-base-100 text-base-content shadow-sm'
-                : 'text-base-content/45 hover:text-base-content/70 cursor-pointer'
-          "
-          :disabled="!canPenetrate || !canSwitchMode"
-          @click="penetrationMode = 'stepwise'"
-        >
-          {{ $t('stepwisePenetration') }}
-        </button>
-        <button
-          class="proxy-penetration-mode-btn rounded-md px-3 py-1.5 text-sm leading-5 font-medium transition-colors"
-          :class="
-            !canPenetrate || !canSwitchMode
-              ? 'text-base-content/35 cursor-not-allowed'
-              : penetrationMode === 'full'
-                ? 'bg-base-100 text-base-content shadow-sm'
-                : 'text-base-content/45 hover:text-base-content/70 cursor-pointer'
-          "
-          :disabled="!canPenetrate || !canSwitchMode"
-          @click="penetrationMode = 'full'"
-        >
-          {{ $t('fullExpansion') }}
-        </button>
-      </div>
     </div>
 
     <div
@@ -54,15 +24,24 @@
       class="border-base-300/60 mt-2 border-t"
     >
       <div
-        v-for="(groupName, index) in renderedGroups"
-        :key="groupName"
+        v-for="(level, index) in renderedLevels"
+        :key="level.key"
         class="border-base-300/60 border-b pt-2.5 pb-4 last:border-b-0 last:pb-0 max-md:pb-3 max-md:last:pb-0"
       >
+        <!-- 故障转移组后面跟一层「当前选中页签的明细节点」;页签本身在上一层(父组那一栏)里选 -->
+        <FailoverLaneDetail
+          v-if="level.kind === 'lane'"
+          :group-name="level.groupName"
+          :lane-id="level.laneId"
+        />
         <ProxyEmbeddedGroup
-          :name="groupName"
+          v-else
+          :name="level.groupName"
           :level="index + 1"
           :root-group-name="groupNameRoot"
+          :selected-lane-id="selectedLaneFor(level.groupName)"
           @selection-change="handleSelectionChange"
+          @lane-change="handleLaneChange"
         />
       </div>
     </div>
@@ -70,39 +49,31 @@
 </template>
 
 <script setup lang="ts">
+import { failoverCurrentLaneId, failoverLanesOf, isFailoverGroup, isFailoverInternalTag } from '@/store/openboxFailover'
 import { getDescendantProxyGroups, getProxyGroupChains, proxyMap } from '@/store/proxies'
 import { collapseGroupMap } from '@/store/settings'
 import { ChevronDownIcon } from '@heroicons/vue/24/outline'
-import { useStorage } from '@vueuse/core'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import FailoverLaneDetail from './FailoverLaneDetail.vue'
 import ProxyEmbeddedGroup from './ProxyEmbeddedGroup.vue'
 
+// 穿透:展开站点集卡片只看到它的成员(节点 / 节点组),穿透默认收着;点「策略穿透」
+// 才把整条链(站点集 → 组 → … → 节点)一次全部摆出来,每一层的节点列表也是展开的。
+// 没有「逐层 / 到底」的模式可选——原来那套逐层展开只是多点几次鼠标。
 const props = defineProps<{
   groupName: string
 }>()
 
-type PenetrationMode = 'stepwise' | 'full'
-
 const { t } = useI18n()
 const isExpanded = ref(false)
-const penetrationModeMap = useStorage<Record<string, PenetrationMode>>(
-  'cache/proxy-penetration-mode-map',
-  {},
-)
 const groupNameRoot = props.groupName
-const penetrationMode = computed<PenetrationMode>({
-  get: () => penetrationModeMap.value[groupNameRoot] ?? 'stepwise',
-  set: (value) => {
-    penetrationModeMap.value[groupNameRoot] = value
-  },
-})
-const lastSelectedGroupName = ref('')
 const selectedPenetrationGroupMap = ref<Record<string, string>>({})
-const stepwiseVisibleCount = ref(1)
 
+// 故障转移的内部子组(__fo:…)不单独成一层:父组那一层已经直接列到节点了
 const getActualNextGroupName = (groupName: string) => {
-  return getProxyGroupChains(groupName)[1] ?? ''
+  const next = getProxyGroupChains(groupName)[1] ?? ''
+  return isFailoverInternalTag(next) ? '' : next
 }
 
 const getSelectedNextGroupName = (groupName: string) => {
@@ -110,6 +81,7 @@ const getSelectedNextGroupName = (groupName: string) => {
 
   if (
     selectedName &&
+    !isFailoverInternalTag(selectedName) &&
     (proxyMap.value[groupName]?.all ?? []).includes(selectedName) &&
     proxyMap.value[selectedName]?.all?.length
   ) {
@@ -146,36 +118,38 @@ const buildPenetratedGroupNames = () => {
 
 const penetratedGroupNames = computed(() => buildPenetratedGroupNames())
 const canPenetrate = computed(() => penetratedGroupNames.value.length > 0)
-const canSwitchMode = computed(() => penetratedGroupNames.value.length > 1)
+const renderedGroups = computed(() => (canPenetrate.value ? penetratedGroupNames.value : []))
 
-const renderedGroups = computed(() => {
-  if (!canPenetrate.value) {
-    return []
+// 故障转移组:上面一栏选页签(不动内核),下面一栏看它的节点。没点过就看内核此刻在的那个页签
+const selectedLaneMap = ref<Record<string, string>>({})
+const selectedLaneFor = (groupName: string) => {
+  if (!isFailoverGroup(groupName)) return null
+  const lanes = failoverLanesOf(groupName, proxyMap.value) ?? []
+  const picked = selectedLaneMap.value[groupName]
+  if (picked && lanes.some((l) => l.id === picked)) return picked
+  return failoverCurrentLaneId(groupName, lanes, proxyMap.value[groupName]?.now) ?? lanes[0]?.id ?? null
+}
+const handleLaneChange = (groupName: string, laneId: string) => {
+  selectedLaneMap.value = { ...selectedLaneMap.value, [groupName]: laneId }
+}
+type Level = { key: string; kind: 'group'; groupName: string } | { key: string; kind: 'lane'; groupName: string; laneId: string }
+const renderedLevels = computed<Level[]>(() => {
+  const out: Level[] = []
+  for (const groupName of renderedGroups.value) {
+    out.push({ key: groupName, kind: 'group', groupName })
+    if (isFailoverGroup(groupName)) {
+      const laneId = selectedLaneFor(groupName)
+      if (laneId) out.push({ key: `lane:${groupName}:${laneId}`, kind: 'lane', groupName, laneId })
+    }
   }
-
-  if (penetrationMode.value === 'stepwise') {
-    return penetratedGroupNames.value.slice(0, stepwiseVisibleCount.value)
-  }
-
-  return penetratedGroupNames.value
+  return out
 })
 
 const buttonLabel = computed(() =>
   isExpanded.value ? t('collapsePenetration') : t('strategyPenetration'),
 )
 
-const syncStepwiseVisibleCount = (groupNames: string[]) => {
-  const selectedIndex = lastSelectedGroupName.value
-    ? groupNames.indexOf(lastSelectedGroupName.value)
-    : -1
-
-  stepwiseVisibleCount.value =
-    selectedIndex === -1 ? 1 : Math.min(groupNames.length, selectedIndex + 2)
-}
-
 const handleSelectionChange = (groupName: string, nodeName: string) => {
-  lastSelectedGroupName.value = groupName
-
   const nextSelectedPenetrationGroupMap = { ...selectedPenetrationGroupMap.value }
 
   getDescendantProxyGroups(groupName).forEach((descendantGroupName) => {
@@ -192,58 +166,32 @@ const handleSelectionChange = (groupName: string, nodeName: string) => {
   }
 
   selectedPenetrationGroupMap.value = nextSelectedPenetrationGroupMap
-
-  if (penetrationMode.value === 'stepwise') {
-    syncStepwiseVisibleCount(buildPenetratedGroupNames())
-  }
 }
 
-const resetStepwiseVisibleCount = () => {
-  stepwiseVisibleCount.value = 1
-}
-
-const resetRenderedGroupCollapseState = (groupNames: string[]) => {
+// 每一层的节点列表都展开(ProxyEmbeddedGroup 按这个 key 决定显示圆点预览还是节点卡片)
+const openRenderedGroups = (groupNames: string[]) => {
   groupNames.forEach((_groupName, index) => {
-    collapseGroupMap.value[`penetration:${groupNameRoot}:level-${index + 1}`] = false
+    collapseGroupMap.value[`penetration:${groupNameRoot}:level-${index + 1}`] = true
   })
 }
 
 watch(canPenetrate, (value) => {
   if (!value) {
     isExpanded.value = false
-    lastSelectedGroupName.value = ''
     selectedPenetrationGroupMap.value = {}
-    resetStepwiseVisibleCount()
   }
 })
 
-watch(canSwitchMode, (value) => {
-  if (!value) {
-    penetrationMode.value = 'stepwise'
-  }
-})
-
+// 链条变了(比如在某一层换选了别的组)就把新出现的层也展开
 watch(
-  penetratedGroupNames,
+  renderedGroups,
   (groupNames) => {
-    if (penetrationMode.value === 'stepwise') {
-      syncStepwiseVisibleCount(groupNames)
-    }
-
-    if (!isExpanded.value) {
-      return
+    if (isExpanded.value) {
+      openRenderedGroups(groupNames)
     }
   },
-  { deep: true },
+  { immediate: true },
 )
-
-watch(penetrationMode, (mode) => {
-  lastSelectedGroupName.value = ''
-
-  if (mode === 'stepwise') {
-    resetStepwiseVisibleCount()
-  }
-})
 
 const togglePenetration = () => {
   if (!canPenetrate.value) {
@@ -253,13 +201,7 @@ const togglePenetration = () => {
   const nextExpanded = !isExpanded.value
 
   if (nextExpanded) {
-    if (penetrationMode.value === 'stepwise') {
-      resetStepwiseVisibleCount()
-    }
-
-    resetRenderedGroupCollapseState(renderedGroups.value)
-  } else {
-    lastSelectedGroupName.value = ''
+    openRenderedGroups(renderedGroups.value)
   }
 
   isExpanded.value = nextExpanded

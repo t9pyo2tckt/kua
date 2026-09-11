@@ -185,6 +185,7 @@ import {
   getNetworkTypeFromConnection,
   getProcessFromConnection,
 } from '@/helper'
+import { copyText } from '@/helper/clipboard'
 import { showNotification } from '@/helper/notification'
 import { getIPLabelFromMap } from '@/helper/sourceip'
 import { fromNow, prettyBytesHelper } from '@/helper/utils'
@@ -192,7 +193,6 @@ import { connectionTabShow, renderConnections } from '@/store/connections'
 import {
   connectionTableColumns,
   proxyChainDirection,
-  showFullProxyChain,
   tableSize,
   tableWidthMode,
 } from '@/store/settings'
@@ -346,11 +346,7 @@ const columns: ColumnDef<Connection>[] = [
     cell: ({ row }) => {
       const chains: VNode[] = []
       const isReverse = proxyChainDirection.value === PROXY_CHAIN_DIRECTION.REVERSE
-      let originChains = row.original.chains
-
-      if (!showFullProxyChain.value && originChains.length > 2) {
-        originChains = [originChains[0], originChains[originChains.length - 1]]
-      }
+      const originChains = row.original.chains
 
       // 完整显示所有代理链
       originChains.forEach((chain, index) => {
@@ -660,33 +656,10 @@ const handlePinColumn = (column: Column<Connection, unknown>) => {
   }
 }
 
-// 复制功能
+// 复制功能:统一走 helper/clipboard(http 下 navigator.clipboard 不可用时走兜底)
 const copyToClipboard = async (text: string) => {
-  try {
-    await navigator.clipboard.writeText(text)
-    showNotification({
-      content: 'copySuccess',
-      type: 'alert-success',
-      timeout: 2000,
-    })
-  } catch {
-    // 降级处理
-    const textArea = document.createElement('textarea')
-    textArea.value = text
-    document.body.appendChild(textArea)
-    textArea.select()
-    try {
-      document.execCommand('copy')
-      showNotification({
-        content: 'copySuccess',
-        type: 'alert-success',
-        timeout: 2000,
-      })
-    } catch (error) {
-      console.error('复制失败:', error)
-    }
-    document.body.removeChild(textArea)
-  }
+  const ok = await copyText(text)
+  showNotification(ok ? { content: 'copySuccess', type: 'alert-success', timeout: 2000 } : { content: 'copyFailed', type: 'alert-error' })
 }
 
 const handleCellRightClick = (

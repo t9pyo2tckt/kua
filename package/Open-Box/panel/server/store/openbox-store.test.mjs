@@ -19,6 +19,11 @@ test('getProfile 无值返回默认', () => {
   assert.deepEqual(store.getProfile(), DEFAULT_PROFILE)
 })
 
+test('IPv6 默认关闭:不解析也不访问 v6,除非用户自己打开', () => {
+  const { store } = memStore()
+  assert.equal(store.getProfile().ipv6, false)
+})
+
 test('setProfile 深合并,不丢未提及字段', () => {
   const { store } = memStore()
   store.setProfile({ ipv6: false, dns: { mode: 'dnsmasq' } })
@@ -102,4 +107,20 @@ test('损坏的部署态 JSON 回退到默认', () => {
   const { store, m } = memStore()
   m.set(KEYS.deployState, 'not json')
   assert.deepEqual(store.getDeployState(), { stage: 'idle', message: '', at: 0, badTags: [] })
+})
+
+test('线路选择快照:键名带 openbox/ 前缀(受保护,不会被设置同步清掉);旧的点号键自动搬过来', () => {
+  const m = new Map()
+  const store = createStore({ get: (k) => (m.has(k) ? m.get(k) : null), set: (k, v) => m.set(k, v), del: (k) => m.delete(k) })
+  assert.equal(KEYS.selections, 'openbox/selections')
+  m.set('openbox.selections', JSON.stringify({ '谷歌': '香港' }))
+  assert.deepEqual(store.getSelectionsSnapshot(), { '谷歌': '香港' })
+  assert.ok(!m.has('openbox.selections'))
+  assert.ok(m.has('openbox/selections'))
+  store.setSelectionsSnapshot({ a: 'b' })
+  assert.equal(m.get('openbox/selections'), JSON.stringify({ a: 'b' }))
+  // 内核在跑时直接写新快照(不经 get):旧键也要被清掉
+  m.set('openbox.selections', '{}')
+  store.setSelectionsSnapshot({ c: 'd' })
+  assert.ok(!m.has('openbox.selections'))
 })

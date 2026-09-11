@@ -1,23 +1,16 @@
 <template>
-  <div
-    class="card scrollbar-hidden flex-2 overflow-y-auto text-sm"
-    :class="classNameMap[numberOfChartsInSidebar]"
-  >
-    <SpeedCharts class="h-28 shrink-0" />
-    <MemoryCharts class="h-28 shrink-0" />
-    <ConnectionsCharts class="h-28 shrink-0" />
+  <!-- 侧边栏只放一张实时速度图,不再在速度 / 内存 / 连接之间切换。
+       上下左右内边距 12px(card p-3),和下面那张统计卡片一样,两张卡片的内容左边对齐。 -->
+  <div class="card p-3 text-sm">
+    <!-- 绘图区上边距从 15px 收到 8px 省下的 7px 直接从图高里扣掉(112 → 105),卡片跟着矮 -->
+    <SpeedCharts
+      class="h-[105px]!"
+      :pausable="false"
+      :tooltip="false"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import ConnectionsCharts from '@/components/overview/ConnectionsCharts.vue'
-import MemoryCharts from '@/components/overview/MemoryCharts.vue'
 import SpeedCharts from '@/components/overview/SpeedCharts.vue'
-import { numberOfChartsInSidebar } from '@/store/settings'
-
-const classNameMap = {
-  1: 'max-h-28',
-  2: 'max-h-56',
-  3: 'max-h-84',
-}
 </script>

@@ -9,10 +9,10 @@
         v-for="node in nodesLatency"
         :key="node.name"
         class="flex h-4 w-4 items-center justify-center rounded-full transition hover:scale-110"
-        :class="getBgColor(node.latency)"
+        :class="[getBgColor(node.latency), selectable ? 'cursor-pointer' : 'cursor-default']"
         ref="dotsRef"
         @mouseenter="(e) => makeTippy(e, node)"
-        @click.stop="$emit('nodeclick', node.name)"
+        @click.stop="selectable && $emit('nodeclick', node.name)"
       >
         <div
           class="h-2 w-2 rounded-full bg-white"
@@ -53,11 +53,12 @@
 </template>
 
 <script setup lang="ts">
+import { failoverDisplayName } from '@/store/openboxFailover'
 import { NOT_CONNECTED, PROXY_PREVIEW_TYPE } from '@/constant'
 import { getColorForLatency } from '@/helper'
 import { useTooltip } from '@/helper/tooltip'
 import { isWindowResizing } from '@/helper/windowResizeState'
-import { getLatencyByName } from '@/store/proxies'
+import { getLatencyByName, isManualSelectable } from '@/store/proxies'
 import { lowLatency, mediumLatency, proxyPreviewType } from '@/store/settings'
 import { useElementSize } from '@vueuse/core'
 import { computed, nextTick, ref, watch } from 'vue'
@@ -71,6 +72,8 @@ const props = defineProps<{
 }>()
 
 const { showTip } = useTooltip()
+// 自动择优 / 故障转移的圆点不可点(见 store/proxies.ts 的 isManualSelectable)
+const selectable = computed(() => isManualSelectable(props.groupName))
 const previewRef = ref<HTMLElement | null>(null)
 const { width } = useElementSize(previewRef)
 const stableWidth = ref(0)
@@ -108,7 +111,7 @@ const makeTippy = (e: Event, node: { name: string; latency: number }) => {
   const tag = document.createElement('div')
   const name = document.createElement('div')
 
-  name.textContent = node.name
+  name.textContent = failoverDisplayName(node.name)
   tag.append(name)
 
   if (node.latency !== NOT_CONNECTED) {

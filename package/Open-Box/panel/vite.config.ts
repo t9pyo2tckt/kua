@@ -35,10 +35,15 @@ export default defineConfig({
   },
   base: './',
   build: {
-    // 国旗默认会被当成小资源内联成 data URI,52 面全塞进主 chunk 就是白白多背 300KB
-    // ——而一次界面上只会显示到其中几面。让 src/assets/flags 下的文件一律走独立文件,
+    // 国旗/通用图标默认会被当成小资源内联成 data URI,150 多个全塞进主 chunk 就是白白
+    // 多背 400KB——而一次界面上只会显示到其中几个。让这两个目录下的文件一律走独立文件,
     // 浏览器按需去取;其余资源保持 Vite 的默认阈值不变。
-    assetsInlineLimit: (filePath: string) => (filePath.includes('/assets/flags/') ? false : undefined),
+    // globes/ 也不能内联:内联出来是 data:image/svg+xml,%3csvg…(URL 编码),而代理页的
+    // ProxyIcon 把这个前缀当成"后面是原始 svg 标记"直接 v-html,页面上就成了一串乱码。
+    assetsInlineLimit: (filePath: string) =>
+      filePath.includes('/assets/flags/') || filePath.includes('/assets/misc/') || filePath.includes('/assets/globes/')
+        ? false
+        : undefined,
   },
   server: {
     proxy: {
@@ -58,7 +63,9 @@ export default defineConfig({
         name: 'Open-Box',
         short_name: 'Open-Box',
         description: 'Open-Box - integrated sing-box management for OpenWrt',
-        theme_color: '#000000',
+        // 装成 PWA 时状态栏的兜底色;真正生效的是 App.vue 里按主题动态写的 <meta theme-color>
+        theme_color: '#FFFFFF',
+        background_color: '#FFFFFF',
         icons: [
           {
             src: './pwa-192x192.png',

@@ -36,8 +36,16 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
         label: 'globalRadius',
       },
       {
-        key: `${SETTINGS_MENU_KEY.general}.zashboardSettings.theme`,
-        label: 'theme',
+        key: `${SETTINGS_MENU_KEY.general}.zashboardSettings.defaultTheme`,
+        label: 'defaultTheme',
+      },
+      {
+        key: `${SETTINGS_MENU_KEY.general}.zashboardSettings.darkTheme`,
+        label: 'darkTheme',
+      },
+      {
+        key: `${SETTINGS_MENU_KEY.general}.zashboardSettings.autoSwitchTheme`,
+        label: 'autoSwitchTheme',
       },
       {
         key: `${SETTINGS_MENU_KEY.general}.zashboardSettings.autoUpgrade`,
@@ -99,14 +107,6 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
         key: `${SETTINGS_MENU_KEY.overview}.autoConnectionCheckWhenStart`,
         label: 'autoConnectionCheckWhenStart',
       },
-      {
-        key: `${SETTINGS_MENU_KEY.overview}.showStatisticsWhenSidebarCollapsed`,
-        label: 'showStatisticsWhenSidebarCollapsed',
-      },
-      {
-        key: `${SETTINGS_MENU_KEY.overview}.numberOfChartsInSidebar`,
-        label: 'numberOfChartsInSidebar',
-      },
     ],
   },
   {
@@ -136,10 +136,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
         label: 'independentLatencyTest',
       },
       { key: `${SETTINGS_MENU_KEY.proxies}.groupTestUrls`, label: 'groupTestUrls' },
-      {
-        key: `${SETTINGS_MENU_KEY.proxies}.twoColumnProxyGroup`,
-        label: 'twoColumnProxyGroup',
-      },
+      { key: `${SETTINGS_MENU_KEY.proxies}.proxyGroupColumns`, label: 'proxyGroupColumns' },
       { key: `${SETTINGS_MENU_KEY.proxies}.truncateProxyName`, label: 'truncateProxyName' },
       {
         key: `${SETTINGS_MENU_KEY.proxies}.displayGlobalByMode`,

@@ -15,8 +15,7 @@ import {
   SETTINGS_MENU_KEY,
   TABLE_SIZE,
   TABLE_WIDTH_MODE,
-  TEST_URL,
-  THEME_MODE,
+  DIRECT_TEST_URL, TEST_URL,
 } from '@/constant'
 import { detectDefaultLanguage, getMinCardWidth, isMiddleScreen, isPreferredDark } from '@/helper/utils'
 import type { SourceIPLabel } from '@/types'
@@ -24,44 +23,24 @@ import { useStorage } from '@vueuse/core'
 import { computed } from 'vue'
 
 // global
-export const defaultTheme = useStorage<string>('config/default-theme', 'light')
-export const darkTheme = useStorage<string>('config/dark-theme', 'dark')
-export const autoTheme = useStorage<boolean>('config/auto-theme', true)
+// 主题只有三档:跟随系统 / 亮色 / 暗色。亮色 = daisyUI 的 emerald,暗色 = forest;
+// 不再有主题列表和自定义主题。默认亮色。
+export type ThemeMode = 'system' | 'light' | 'dark'
+export const THEME_MODES: ThemeMode[] = ['system', 'light', 'dark']
+export const LIGHT_THEME = 'emerald'
+export const DARK_THEME = 'forest'
+export const themeMode = useStorage<ThemeMode>('config/theme-mode', 'light')
 export const theme = computed(() => {
-  if (autoTheme.value && isPreferredDark.value) {
-    return darkTheme.value
-  }
-  return defaultTheme.value
-})
-
-// UI-facing appearance choice: exactly three options (跟随系统 / 亮色 / 暗色).
-// Maps onto the existing default-theme/dark-theme/auto-theme storage keys so
-// the underlying daisyUI theming mechanism doesn't need to change.
-export const themeMode = computed<THEME_MODE>({
-  get: () => {
-    if (autoTheme.value) {
-      return THEME_MODE.AUTO
-    }
-    return defaultTheme.value === 'dark' ? THEME_MODE.DARK : THEME_MODE.LIGHT
-  },
-  set: (mode) => {
-    if (mode === THEME_MODE.AUTO) {
-      // Explicit 亮色/暗色 picks reuse `defaultTheme` (see below), which is
-      // also the "light branch" auto mode reads. Reset both branches to
-      // their canonical values so re-entering auto always honors
-      // prefers-color-scheme instead of replaying a stale explicit pick.
-      autoTheme.value = true
-      defaultTheme.value = 'light'
-      darkTheme.value = 'dark'
-      return
-    }
-    autoTheme.value = false
-    defaultTheme.value = mode === THEME_MODE.DARK ? 'dark' : 'light'
-  },
+  if (themeMode.value === 'dark') return DARK_THEME
+  if (themeMode.value === 'system' && isPreferredDark.value) return DARK_THEME
+  return LIGHT_THEME
 })
 
 export const language = useStorage<LANG>('config/language', detectDefaultLanguage(navigator.language))
-export const isSidebarCollapsedConfig = useStorage('config/is-sidebar-collapsed', true)
+// 首次进面板侧边栏默认展开(窄屏仍强制折叠,见下方 isMiddleScreen)
+export const isSidebarCollapsedConfig = useStorage('config/is-sidebar-collapsed', false)
+// 概览「每日流量」的「统计直连流量」开关:关掉后走内置直连出站的流量不计入(服务端查询时扣掉,库里数据不动)
+export const trafficCountDirect = useStorage('config/traffic-count-direct', true)
 export const isSidebarCollapsed = computed({
   get: () => {
     if (isMiddleScreen.value) {
@@ -111,14 +90,6 @@ export const autoDisconnectIdleUDPTime = useStorage('config/auto-disconnect-idle
 export const splitOverviewPage = useStorage('config/split-overview-page', false)
 export const autoIPCheck = useStorage('config/auto-ip-check', true)
 export const autoConnectionCheck = useStorage('config/auto-connection-check', true)
-export const showStatisticsWhenSidebarCollapsed = useStorage(
-  'config/show-statistics-when-sidebar-collapsed',
-  true,
-)
-export const numberOfChartsInSidebar = useStorage<1 | 2 | 3>(
-  'config/number-of-charts-in-sidebar',
-  2,
-)
 const defaultOverviewCardOrder: { card: OVERVIEW_CARD; visible: boolean }[] = [
   {
     card: OVERVIEW_CARD.ChartsCard,
@@ -166,9 +137,16 @@ if (missingCards.length > 0) {
 
 // proxies
 export const collapseGroupMap = useStorage<Record<string, boolean>>('config/collapse-group-map', {})
-export const displayFinalOutbound = useStorage('config/show-seleted-for-now-node', false)
-export const twoColumnProxyGroup = useStorage('config/two-columns', true)
+// 代理组分几列(1 / 2 / 3,GitHub #10:策略组多了单列要翻很久)。老设置 config/two-columns 是个
+// 开关,第一次读到时按它换算,老用户的布局不会突然变
+const legacyTwoColumnProxyGroup = useStorage('config/two-columns', true)
+export const proxyGroupColumns = useStorage<number>(
+  'config/proxy-group-columns',
+  legacyTwoColumnProxyGroup.value ? 2 : 1,
+)
 export const speedtestUrl = useStorage<string>('config/speedtest-url', TEST_URL)
+// 内置直连出站用的测速地址(见 constant/index.ts 的说明)
+export const directTestUrl = useStorage<string>('config/direct-test-url', DIRECT_TEST_URL)
 export const independentLatencyTest = useStorage('config/independent-latency-test', false)
 export const speedtestTimeout = useStorage<number>('config/speedtest-timeout', 5000)
 export const proxySortType = useStorage<PROXY_SORT_TYPE>(
@@ -253,17 +231,17 @@ export const proxyChainDirection = useStorage(
   'config/proxy-chain-direction',
   PROXY_CHAIN_DIRECTION.NORMAL,
 )
-export const showFullProxyChain = useStorage('config/show-full-proxy-chain', true)
 export const tableSize = useStorage<TABLE_SIZE>('config/connecticon-table-size', TABLE_SIZE.SMALL)
 export const tableWidthMode = useStorage('config/table-width-mode', TABLE_WIDTH_MODE.AUTO)
+// 默认表头照正式路由器上用顺手的那套:关闭、源 IP、代理链、主机、进站 / 出站速率、进站 / 出站、连接时间
+// (server/defaults/storage-defaults.json 里全新安装的初始值要和这里一致)
 export const connectionTableColumns = useStorage<CONNECTIONS_TABLE_ACCESSOR_KEY[]>(
   'config/connection-table-columns',
   [
     CONNECTIONS_TABLE_ACCESSOR_KEY.Close,
-    CONNECTIONS_TABLE_ACCESSOR_KEY.Host,
-    CONNECTIONS_TABLE_ACCESSOR_KEY.Type,
-    CONNECTIONS_TABLE_ACCESSOR_KEY.Rule,
+    CONNECTIONS_TABLE_ACCESSOR_KEY.SourceIP,
     CONNECTIONS_TABLE_ACCESSOR_KEY.Chains,
+    CONNECTIONS_TABLE_ACCESSOR_KEY.Host,
     CONNECTIONS_TABLE_ACCESSOR_KEY.DlSpeed,
     CONNECTIONS_TABLE_ACCESSOR_KEY.UlSpeed,
     CONNECTIONS_TABLE_ACCESSOR_KEY.Download,
@@ -279,12 +257,8 @@ export const connectionCardLines = useStorage<CONNECTIONS_TABLE_ACCESSOR_KEY[][]
 export const sourceIPLabelList = useStorage<SourceIPLabel[]>('config/source-ip-label-list', [])
 
 // rules
-export const displayNowNodeInRule = useStorage('config/display-now-node-in-rule', true)
-export const displayLatencyInRule = useStorage('config/display-latency-in-rule', true)
-export const disconnectOnRuleDisable = useStorage('config/disconnect-on-rule-disable', true)
 
 // logs
-export const logRetentionLimit = useStorage<number>('config/log-retention-limit', 1000)
 export const logSearchHistory = useStorage<string[]>('config/log-search-history', [])
 
 // settings visibility

@@ -1,41 +1,28 @@
 import { isSingBox } from '@/api'
+import { normalizeRuleTarget } from '@/store/rules'
 import { useCtrlsBar } from '@/composables/useCtrlsBar'
 import { LOG_LEVEL } from '@/constant'
 import { useTooltip } from '@/helper/tooltip'
-import {
-  initLogs,
-  isPaused,
-  logFilter,
-  logFilterEnabled,
-  logFilterRegex,
-  logLevel,
-  logTypeFilter,
-  logs,
-} from '@/store/logs'
-import { logRetentionLimit, logSearchHistory } from '@/store/settings'
+import { initLogs, isPaused, logFilter, logLevel, logTypeFilter, logs } from '@/store/logs'
+import { logSearchHistory } from '@/store/settings'
 import {
   ArrowDownTrayIcon,
-  LinkIcon,
-  LinkSlashIcon,
   PauseIcon,
   PlayIcon,
-  QuestionMarkCircleIcon,
-  WrenchScrewdriverIcon,
+  SparklesIcon,
   XMarkIcon,
 } from '@heroicons/vue/24/outline'
 import dayjs from 'dayjs'
 import { debounce } from 'lodash'
-import { computed, defineComponent, ref, watch } from 'vue'
+import { computed, defineComponent, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import DialogWrapper from '../common/DialogWrapper.vue'
 import TextInput from '../common/TextInput.vue'
 
 export default defineComponent({
   setup() {
     const { t } = useI18n()
-    const settingsModel = ref(false)
     const { isLargeCtrlsBar } = useCtrlsBar()
-    const { showTip, updateTip } = useTooltip()
+    const { showTip } = useTooltip()
     const insertLogSearchHistory = debounce((log: string) => {
       if (!log) {
         return
@@ -134,7 +121,7 @@ export default defineComponent({
     return () => {
       const levelSelect = (
         <select
-          class={['join-item select select-sm min-w-30']}
+          class={['join-item select select-sm w-24 shrink-0']}
           v-model={logLevel.value}
           onChange={initLogs}
         >
@@ -149,21 +136,31 @@ export default defineComponent({
         </select>
       )
       const searchInput = (
-        <TextInput
-          v-model={logFilter.value}
-          beforeClose={true}
-          class="flex-1"
-          placeholder={`${t('search')} | Regex`}
-          clearable={true}
-          menus={logSearchHistory.value}
-          menusDeleteable={true}
-          onUpdate:menus={(val) => (logSearchHistory.value = val)}
-        />
+        <div class="flex min-w-0 flex-1 items-center gap-2">
+          <TextInput
+            v-model={logFilter.value}
+            beforeClose={true}
+            class={isLargeCtrlsBar.value ? 'min-w-64 flex-1' : 'min-w-0 flex-1'}
+            placeholder={`${t('search')} | Regex`}
+            clearable={true}
+            menus={logSearchHistory.value}
+            menusDeleteable={true}
+            onUpdate:menus={(val) => (logSearchHistory.value = val)}
+          />
+          <button
+            class="btn btn-circle btn-sm shrink-0"
+            // 和连接页一样:整条 URL 整理成主机名(不带端口)再搜
+            onClick={() => (logFilter.value = normalizeRuleTarget(logFilter.value).replace(/:\d+$/, ''))}
+            onMouseenter={(e) => showTip(e, t('ruleFormatQuery'))}
+          >
+            <SparklesIcon class="h-4 w-4" />
+          </button>
+        </div>
       )
 
       const logTypeSelect = (
         <select
-          class={['select select-sm', isLargeCtrlsBar.value ? 'w-40' : 'w-24 max-w-40 flex-1']}
+          class={['select select-sm shrink-0', isLargeCtrlsBar.value ? 'w-28' : 'w-20 max-w-28']}
           v-model={logTypeFilter.value}
         >
           <option value="">{t('all')}</option>
@@ -190,83 +187,13 @@ export default defineComponent({
         </select>
       )
 
-      const settingsModal = (
-        <>
-          <button
-            class={'btn btn-circle btn-sm'}
-            onClick={() => (settingsModel.value = true)}
-          >
-            <WrenchScrewdriverIcon class="h-4 w-4" />
-          </button>
-          <DialogWrapper
-            v-model={settingsModel.value}
-            title={t('logSettings')}
-          >
-            <div class="flex flex-col gap-4 p-2 text-sm">
-              <div class="flex items-center gap-2">
-                {t('logRetentionLimit')}
-                <input
-                  class="input input-sm w-20"
-                  type="number"
-                  max="9999"
-                  v-model={logRetentionLimit.value}
-                />
-              </div>
-              <div class="flex items-center gap-2">
-                <span class="shrink-0">{t('hideLogRegex')}</span>
-                <TextInput
-                  class="w-32 max-w-64 flex-1"
-                  v-model={logFilterRegex.value}
-                />
-              </div>
-              <div class="flex items-center gap-2">
-                {t('hideLog')}
-                <input
-                  type="checkbox"
-                  class="toggle"
-                  v-model={logFilterEnabled.value}
-                />
-                <div
-                  onMouseenter={(e) =>
-                    showTip(e, t('hideLogTip'), {
-                      appendTo: 'parent',
-                    })
-                  }
-                >
-                  <QuestionMarkCircleIcon class="h-4 w-4" />
-                </div>
-              </div>
-            </div>
-          </DialogWrapper>
-        </>
-      )
-
       const buttons = (
         <div class="flex items-center gap-2">
-          {settingsModal}
           <button
             class="btn btn-circle btn-sm"
             onClick={downloadAllLogs}
           >
             <ArrowDownTrayIcon class="h-4 w-4" />
-          </button>
-          <button
-            class="btn btn-circle btn-sm"
-            onClick={() => {
-              logFilterEnabled.value = !logFilterEnabled.value
-              updateTip(logFilterEnabled.value ? t('showLog') : t('hideLog'))
-            }}
-            onMouseenter={(e) =>
-              showTip(e, logFilterEnabled.value ? t('showLog') : t('hideLog'), {
-                appendTo: 'parent',
-              })
-            }
-          >
-            {logFilterEnabled.value ? (
-              <LinkSlashIcon class="h-4 w-4" />
-            ) : (
-              <LinkIcon class="h-4 w-4" />
-            )}
           </button>
           <button
             class="btn btn-circle btn-sm"

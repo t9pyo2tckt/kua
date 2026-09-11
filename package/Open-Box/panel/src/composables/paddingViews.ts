@@ -10,15 +10,18 @@ export const usePaddingForViews = (
   },
 ) => {
   const { offsetTop, offsetBottom } = config
+  // 手机端顶部工具栏和底部导航都是悬浮的:内容要垫到它们外面,再各留一段和全局间距
+  // 一致的 8px 安全边距,不然第一张 / 最后一张卡片贴着条
+  const MOBILE_SAFE_GAP = 8
   const paddingTop = computed(() => {
     if (isMiddleScreen.value) {
-      return ctrlsBottom.value + offsetTop
+      return ctrlsBottom.value + offsetTop + MOBILE_SAFE_GAP
     }
     return 0
   })
   const paddingBottom = computed(() => {
     if (isMiddleScreen.value) {
-      return dockTop.value + offsetBottom
+      return dockTop.value + offsetBottom + MOBILE_SAFE_GAP
     }
     return 0
   })

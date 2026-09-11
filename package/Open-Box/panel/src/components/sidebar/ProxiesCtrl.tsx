@@ -1,43 +1,27 @@
-import { disconnectByIdAPI, isSingBox } from '@/api'
 import { nodeGroups, policyGroups, renderGroups } from '@/composables/proxies'
 import { useCtrlsBar } from '@/composables/useCtrlsBar'
-import { PROXY_SORT_TYPE, PROXY_TAB_TYPE, ROUTE_NAME, SETTINGS_MENU_KEY } from '@/constant'
-import {
-  buildProxyCategoryGroups,
-  getProxyCategoryCollapseKey,
-  isProxyCategoryEnabled,
-} from '@/helper/proxyCategory'
+import { PROXY_SORT_TYPE, PROXY_TAB_TYPE } from '@/constant'
 import { getMinCardWidth } from '@/helper/utils'
-import { configs, updateConfigs } from '@/store/config'
 import {
   openboxSubscriptions,
   refreshAllOpenboxSubscriptions,
 } from '@/store/openboxSubscriptions'
-import { routingPendingDeploy } from '@/store/routing'
-import { activeConnections } from '@/store/connections'
 import {
+  proxyMap,
   allProxiesLatencyTest,
   fetchProxies,
   hasSmartGroup,
   proxiesFilter,
   proxiesTabShow,
-  proxyProviederList,
 } from '@/store/proxies'
 import {
-  automaticDisconnection,
   collapseGroupMap,
-  displayFinalOutbound,
   groupProxiesByProvider,
-  hideUnavailableProxies,
-  manageHiddenGroup,
   minProxyCardWidth,
   providerProxyCategoryCollapseMap,
-  providerProxyCategoryEnabledMap,
-  providerProxyCategoryFeatureEnabled,
-  providerProxyCategoryWildcardMap,
   proxyCardSize,
+  proxyGroupColumns,
   proxySortType,
-  twoColumnProxyGroup,
   useSmartGroupSort,
 } from '@/store/settings'
 import {
@@ -47,12 +31,12 @@ import {
   ChevronUpIcon,
   WrenchScrewdriverIcon,
 } from '@heroicons/vue/24/outline'
-import { every } from 'lodash'
+import { isEmpty } from 'lodash'
 import { computed, defineComponent, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import DialogWrapper from '../common/DialogWrapper.vue'
 import TextInput from '../common/TextInput.vue'
+import PolicyDisplayOrder from '../proxies/PolicyDisplayOrder.vue'
 
 export default defineComponent({
   name: 'ProxiesCtrl',
@@ -68,7 +52,6 @@ export default defineComponent({
         }
 
     const { t } = useI18n()
-    const router = useRouter()
     const isUpgrading = ref(false)
     const isAllLatencyTesting = ref(false)
     const settingsModel = ref(false)
@@ -81,31 +64,9 @@ export default defineComponent({
       isUpgrading.value = true
       try {
         await refreshAllOpenboxSubscriptions()
-        // 刷新可能换掉节点,和在订阅设置页刷新一样要提示需要重新部署
-        routingPendingDeploy.value = true
         await fetchProxies()
       } finally {
         isUpgrading.value = false
-      }
-    }
-
-    const defaultModes = ['direct', 'rule', 'global']
-    const modeList = computed(() => {
-      return configs.value?.['mode-list'] || configs.value?.['modes'] || defaultModes
-    })
-    const needTranslateModes = computed(() => {
-      return every(modeList.value, (mode) => defaultModes.includes(mode.toLowerCase()))
-    })
-
-    const handlerModeChange = (e: Event) => {
-      const mode = (e.target as HTMLSelectElement).value
-      updateConfigs({ mode })
-      if (isSingBox.value && automaticDisconnection.value) {
-        activeConnections.value.forEach((connection) => {
-          if (connection.rule.includes('clash_mode')) {
-            disconnectByIdAPI(connection.id)
-          }
-        })
       }
     }
 
@@ -120,62 +81,13 @@ export default defineComponent({
       }
     }
 
+    // 全局折叠/展开的目标 = 这一页签正在渲染的那些卡片,折叠键就是卡片名(CollapseCard 的 name)。
+    // 「节点」页签渲染的是 nodeGroups(每个节点组一张卡片);fork 基线里这一支指向
+    // penetration:<组名>:level-1——那是策略卡片里嵌套组的键,这一页没人读它,按钮点了没反应。
     const globalCollapseTargets = computed<GlobalCollapseTarget[]>(() => {
-      if (proxiesTabShow.value === PROXY_TAB_TYPE.NODE) {
-        return renderGroups.value.map((name) => ({
-          type: 'group',
-          key: `penetration:${name}:level-1`,
-        }))
-      }
-
-      if (proxiesTabShow.value === PROXY_TAB_TYPE.PROVIDER) {
-        const targets: GlobalCollapseTarget[] = []
-
-        renderGroups.value.forEach((providerName) => {
-          const provider = proxyProviederList.value.find((item) => item.name === providerName)
-
-          if (!provider) {
-            return
-          }
-
-          const providerAllProxies = provider.proxies.map((node) => node.name)
-          const wildcard = providerProxyCategoryWildcardMap.value[providerName] ?? ''
-          const categoryEnabled =
-            providerProxyCategoryFeatureEnabled.value &&
-            isProxyCategoryEnabled(
-              providerAllProxies,
-              wildcard,
-              providerProxyCategoryEnabledMap.value[providerName] ?? false,
-            )
-
-          if (!categoryEnabled) {
-            targets.push({
-              type: 'group',
-              key: providerName,
-            })
-            return
-          }
-
-          buildProxyCategoryGroups(
-            providerAllProxies,
-            wildcard,
-            t('other'),
-            providerAllProxies,
-          ).forEach(({ name: categoryName }) => {
-            targets.push({
-              type: 'provider-category',
-              key: getProxyCategoryCollapseKey(providerName, categoryName),
-            })
-          })
-        })
-
-        return targets
-      }
-
-      return renderGroups.value.map((name) => ({
-        type: 'group',
-        key: name,
-      }))
+      const names =
+        proxiesTabShow.value === PROXY_TAB_TYPE.NODE ? nodeGroups.value : renderGroups.value
+      return names.map((name) => ({ type: 'group', key: name }))
     })
 
     const hasExpandedTargets = computed(() => {
@@ -215,12 +127,16 @@ export default defineComponent({
       return Object.values(PROXY_TAB_TYPE).map((type) => {
         return {
           type,
+          // 内核没数据时策略/节点都是 0:全局模式下 getCurrentProxyGroups 会凭空给一个
+          // GLOBAL,内核根本没跑也会数出"策略 (1)",让人以为有东西只是没显示出来
           count:
-            type === PROXY_TAB_TYPE.POLICY
-              ? policyGroups.value.length
-              : type === PROXY_TAB_TYPE.NODE
-                ? nodeGroups.value.length
-                : openboxSubscriptions.value.length,
+            type === PROXY_TAB_TYPE.PROVIDER
+              ? openboxSubscriptions.value.length
+              : isEmpty(proxyMap.value)
+                ? 0
+                : type === PROXY_TAB_TYPE.POLICY
+                  ? policyGroups.value.length
+                  : nodeGroups.value.length,
         }
       })
     })
@@ -260,28 +176,6 @@ export default defineComponent({
         </button>
       )
 
-      const modeSelect = proxiesTabShow.value === PROXY_TAB_TYPE.POLICY && configs.value && (
-        <select
-          class={[
-            'select select-sm shrink-0',
-            isLargeCtrlsBar.value ? 'min-w-40' : 'w-20 min-w-20',
-          ]}
-          v-model={configs.value.mode}
-          onChange={handlerModeChange}
-        >
-          {modeList.value.map((mode) => {
-            return (
-              <option
-                key={mode}
-                value={mode}
-              >
-                {needTranslateModes.value ? t(mode.toLowerCase()) : mode}
-              </option>
-            )
-          })}
-        </select>
-      )
-
       const sort = (
         <select
           class={['select select-sm']}
@@ -317,7 +211,7 @@ export default defineComponent({
         <button
           class={[
             'btn btn-circle btn-sm',
-            twoColumnProxyGroup.value &&
+            proxyGroupColumns.value > 1 &&
               proxiesTabShow.value !== PROXY_TAB_TYPE.PROVIDER &&
               'max-sm:hidden',
           ]}
@@ -359,10 +253,11 @@ export default defineComponent({
           <DialogWrapper
             v-model={settingsModel.value}
             title={t('proxySettings')}
+            boxClass="w-full max-w-2xl"
           >
             <div class="flex flex-col gap-4 p-2 text-sm">
               <div class="flex items-center gap-2">
-                {t('sortBy')}
+                {t('proxyNodeSortBy')}
                 {sort}
               </div>
               {hasSmartGroup.value && (
@@ -384,38 +279,6 @@ export default defineComponent({
                 />
               </div>
               <div class="flex items-center gap-2">
-                {t('unavailableProxy')}
-                <input
-                  type="checkbox"
-                  class="toggle"
-                  v-model={hideUnavailableProxies.value}
-                />
-              </div>
-              <div class="flex items-center gap-2">
-                {t('manageHiddenGroup')}
-                <input
-                  class="toggle"
-                  type="checkbox"
-                  v-model={manageHiddenGroup.value}
-                />
-              </div>
-              <div class="flex items-center gap-2">
-                {t('automaticDisconnection')}
-                <input
-                  class="toggle"
-                  type="checkbox"
-                  v-model={automaticDisconnection.value}
-                />
-              </div>
-              <div class="flex items-center gap-2">
-                {t('displayFinalOutbound')}
-                <input
-                  class="toggle"
-                  type="checkbox"
-                  v-model={displayFinalOutbound.value}
-                />
-              </div>
-              <div class="flex items-center gap-2">
                 {t('minProxyCardWidth')}
                 <div class="join">
                   <input
@@ -431,19 +294,14 @@ export default defineComponent({
                   </button>
                 </div>
               </div>
-              <div class="divider m-0"></div>
-              <button
-                class="btn btn-block"
-                onClick={() => {
-                  settingsModel.value = false
-                  router.push({
-                    name: ROUTE_NAME.settings,
-                    query: { scrollTo: SETTINGS_MENU_KEY.proxies },
-                  })
-                }}
-              >
-                {t('moreSettings')}
-              </button>
+              {/* 策略的显示顺序(可拖)与命中顺序(只看)并排;弹窗开着时才渲染,免得每次
+                  刷代理页都跟着重算 */}
+              {settingsModel.value && (
+                <>
+                  <div class="divider my-0" />
+                  <PolicyDisplayOrder />
+                </>
+              )}
             </div>
           </DialogWrapper>
         </>
@@ -456,7 +314,6 @@ export default defineComponent({
             {!moveRefreshToSecondRow && upgradeAllIcon}
           </div>
           <div class="flex w-full gap-2">
-            {modeSelect}
             {searchSection}
             <div class="ml-auto flex shrink-0 items-center gap-2">
               {moveRefreshToSecondRow && upgradeAllIcon}
@@ -469,7 +326,6 @@ export default defineComponent({
       ) : (
         <div class="app-card-padding flex gap-2">
           {tabs}
-          {modeSelect}
           {searchSection}
           {upgradeAllIcon}
           {settingsModal}

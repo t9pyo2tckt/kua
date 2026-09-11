@@ -15,6 +15,8 @@
               <span
                 >"<ProxyIcon
                   :icon="proxyMap[node.content].icon"
+                  :size="16"
+                  :scale="proxyMap[node.content].iconScale"
                   class="inline-block"
                   :margin="0"
                 />

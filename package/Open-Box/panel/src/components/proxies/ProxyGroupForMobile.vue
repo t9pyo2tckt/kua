@@ -28,6 +28,10 @@
           :class="proxyGroup.icon && 'pr-10'"
         >
           <span>{{ proxyGroup.type }}</span>
+          <span
+            v-tip="$t('groupNodeCountHint')"
+            class="ml-1 tabular-nums"
+          >({{ nodeStats.valid }}/{{ nodeStats.total }})</span>
         </div>
         <div class="flex items-center">
           <div class="flex flex-1 items-center gap-1 truncate">
@@ -55,6 +59,7 @@
             :loading="isLatencyTesting"
             :name="proxyGroup.now"
             :group-name="proxyGroup.name"
+            :timeline-name="proxyGroup.name"
             @click.stop="handlerLatencyTest"
           />
         </div>
@@ -62,6 +67,7 @@
           v-if="proxyGroup?.icon"
           :icon="proxyGroup.icon"
           :size="40"
+          :scale="proxyGroup.iconScale"
           :margin="0"
           class="absolute top-2 right-2"
         />
@@ -69,7 +75,7 @@
 
       <div
         v-if="displayContent"
-        class="will-change-opacity max-h-108 overflow-y-auto overscroll-contain px-0 sm:px-3 py-2.5 transition-opacity duration-200 ease-out"
+        class="will-change-opacity max-h-108 overflow-y-auto overscroll-contain px-0 py-2.5 transition-opacity duration-200 ease-out sm:px-3"
         :class="[SCROLLABLE_PARENT_CLASS]"
         :style="{
           width: 'calc(100vw - 1rem)',
@@ -93,6 +99,7 @@
 
 <script setup lang="ts">
 import { useBounceOnVisible } from '@/composables/bouncein'
+import { useGroupNodeStats } from '@/composables/groupNodeStats'
 import { disableProxiesPageScroll } from '@/composables/proxies'
 import { useRenderProxies } from '@/composables/renderProxies'
 import { isHiddenGroup } from '@/helper'
@@ -115,6 +122,7 @@ const props = defineProps<{
 const proxyGroup = computed(() => proxyMap.value[props.name])
 const allProxies = computed(() => proxyGroup.value.all ?? [])
 const { renderProxies } = useRenderProxies(allProxies, props.name)
+const nodeStats = useGroupNodeStats(allProxies, props.name)
 const isLatencyTesting = ref(false)
 
 const modalMode = ref(false)

@@ -1,20 +1,12 @@
 <template>
   <div class="flex h-full min-h-0 flex-col overflow-hidden">
     <div class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-      <RoutingDeployBanner
-        :has-undeployed-changes="hasUndeployedChanges"
-        :deploying="deploying"
-        :last-result="lastDeployResult"
-        @deploy="handleDeploy"
-        @dismiss="lastDeployResult = null"
-      />
-
       <div
-        class="flex flex-col gap-3 p-3"
+        class="flex flex-col gap-2 px-2 md:py-2"
         :style="padding"
       >
-        <h1 class="text-lg font-semibold">{{ $t('routing') }}</h1>
-
+        <!-- 分流设置 = 站点集列表(含系统兜底的「其他」):一条流量走哪,只由站点集的顺序 +
+             它在代理页选中的线路决定。测速地址、IPv6 这些内核参数在「内核设置」页。 -->
         <div
           v-if="loading"
           class="flex justify-center py-14"
@@ -22,65 +14,43 @@
           <span class="loading loading-spinner loading-md" />
         </div>
 
-        <p
-          v-else-if="loadError"
-          class="text-error text-sm"
-        >
-          {{ loadError }}
-        </p>
-
-        <template v-else-if="profile">
-          <RoutingRegionCard
-            :profile="profile"
-            :patch-profile="patchProfile"
-          />
-          <RoutingRulesCard
-            :profile="profile"
-            :policy-groups="policyGroups"
-            :patch-profile="patchProfile"
-          />
-          <PolicyGroupsCard
-            :policy-groups="policyGroups"
-            :loading="groupsLoading"
-            :error="groupsError"
-            @retry="loadPolicyGroups"
-          />
-          <DnsSettingsCard
-            :profile="profile"
-            :patch-profile="patchProfile"
-          />
-          <Ipv6Card
-            :profile="profile"
-            :patch-profile="patchProfile"
-          />
-        </template>
+        <RoutingPoliciesCard
+          v-else-if="profile"
+          ref="policiesCard"
+          :profile="profile"
+          :patch-profile="patchProfile"
+        />
       </div>
     </div>
+
+    <!-- 「添加站点集」放顶部页签栏右上角,和订阅管理/节点管理的新增按钮同一个位置、同一种样式 -->
+    <Teleport
+      defer
+      to="#settings-header-actions"
+    >
+      <button
+        v-if="profile"
+        type="button"
+        class="btn btn-primary btn-sm btn-square"
+        v-tip="$t('routingPolicyAdd')"
+        :aria-label="$t('routingPolicyAdd')"
+        @click="policiesCard?.openEditor(null)"
+      >
+        <PlusIcon class="h-4 w-4" />
+      </button>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import type { OpenboxDeployResult, OpenboxDeployState, OpenboxPolicyGroup, OpenboxProfile } from '@/api/openbox'
-import {
-  deployNow,
-  extractPolicyGroups,
-  fetchConfigPreview,
-  fetchDeployState,
-  fetchProfile,
-  saveProfile,
-} from '@/api/openbox'
-import DnsSettingsCard from '@/components/routing/DnsSettingsCard.vue'
-import Ipv6Card from '@/components/routing/Ipv6Card.vue'
-import PolicyGroupsCard from '@/components/routing/PolicyGroupsCard.vue'
-import RoutingDeployBanner from '@/components/routing/RoutingDeployBanner.vue'
-import RoutingRegionCard from '@/components/routing/RoutingRegionCard.vue'
-import RoutingRulesCard from '@/components/routing/RoutingRulesCard.vue'
+import type { OpenboxProfile } from '@/api/openbox'
+import { fetchProfile, saveProfile } from '@/api/openbox'
+import RoutingPoliciesCard from '@/components/routing/RoutingPoliciesCard.vue'
 import { usePaddingForViews } from '@/composables/paddingViews'
-import { routingPendingDeploy } from '@/store/routing'
-import { computed, onMounted, ref } from 'vue'
-import { useI18n } from 'vue-i18n'
+import { showNotification } from '@/helper/notification'
+import { PlusIcon } from '@heroicons/vue/24/outline'
+import { onMounted, ref, useTemplateRef } from 'vue'
 
-const { t } = useI18n()
 const { padding } = usePaddingForViews({
   offsetTop: 0,
   offsetBottom: 0,
@@ -88,48 +58,17 @@ const { padding } = usePaddingForViews({
 
 const profile = ref<OpenboxProfile | null>(null)
 const loading = ref(true)
-const loadError = ref('')
-
-const policyGroups = ref<OpenboxPolicyGroup[]>([])
-const groupsLoading = ref(false)
-const groupsError = ref('')
-
-const deployState = ref<OpenboxDeployState>({ stage: 'idle', message: '', at: 0, badTags: [] })
-const deploying = ref(false)
-const lastDeployResult = ref<OpenboxDeployResult | null>(null)
-
-// Not deployed yet (or the last attempt didn't end up 'running') always counts as "changes
-// pending" regardless of the local flag; on top of that, any save made through this page since
-// the last successful deploy also counts — see store/routing.ts for why that second half has to
-// be tracked client-side.
-const hasUndeployedChanges = computed(() => deployState.value.stage !== 'running' || routingPendingDeploy.value)
-
-const loadPolicyGroups = async () => {
-  groupsLoading.value = true
-  groupsError.value = ''
-  try {
-    const config = await fetchConfigPreview()
-    policyGroups.value = extractPolicyGroups(config, profile.value?.routing.proxyTag || 'PROXY')
-  } catch (error) {
-    groupsError.value = t('routingPolicyGroupsLoadFailed', {
-      message: error instanceof Error ? error.message : String(error),
-    })
-  } finally {
-    groupsLoading.value = false
-  }
-}
+const policiesCard = useTemplateRef('policiesCard')
 
 const load = async () => {
   loading.value = true
-  loadError.value = ''
   try {
-    const [fetchedProfile, fetchedDeployState] = await Promise.all([fetchProfile(), fetchDeployState()])
-    profile.value = fetchedProfile
-    deployState.value = fetchedDeployState
-    await loadPolicyGroups()
+    profile.value = await fetchProfile()
   } catch (error) {
-    loadError.value = t('routingLoadFailed', {
-      message: error instanceof Error ? error.message : String(error),
+    showNotification({
+      content: 'routingLoadFailed',
+      params: { message: error instanceof Error ? error.message : String(error) },
+      type: 'alert-error',
     })
   } finally {
     loading.value = false
@@ -138,36 +77,11 @@ const load = async () => {
 
 onMounted(load)
 
-// Single choke point every card's edits go through: on success it updates the shared profile
-// (so every card re-renders from the new server truth) and marks changes pending; on failure it
-// rethrows so the calling card can show its own contextual error message.
+// 站点集卡片的所有改动都经这里写档案:成功后用服务端返回的新档案刷新,失败原样抛给卡片提示。
+// 保存到这里就结束了——要生效去内核页重启内核,那里会用当前档案重新生成并应用配置。
 const patchProfile = async (patch: Record<string, unknown>): Promise<OpenboxProfile> => {
   const updated = await saveProfile(patch)
   profile.value = updated
-  routingPendingDeploy.value = true
   return updated
-}
-
-const handleDeploy = async () => {
-  if (deploying.value) return
-
-  deploying.value = true
-  try {
-    const result = await deployNow()
-    lastDeployResult.value = result
-    if (result.ok) {
-      routingPendingDeploy.value = false
-    }
-    deployState.value = await fetchDeployState().catch(() => deployState.value)
-  } catch (error) {
-    lastDeployResult.value = {
-      ok: false,
-      stage: 'error',
-      message: error instanceof Error ? error.message : String(error),
-      badTags: [],
-    }
-  } finally {
-    deploying.value = false
-  }
 }
 </script>
