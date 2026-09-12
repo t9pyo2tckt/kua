@@ -195,7 +195,6 @@ jobs:
           path: |
             ./openwrt/.ccache
             ./openwrt/staging_dir
-            ./openwrt/dl
 
       - name: 🕒 缓存时间戳维护
         if: ${{ github.event.inputs.Enable_cache == 'true' }}
@@ -415,7 +414,7 @@ jobs:
         run: |
           cd openwrt
           echo "=== 即将被缓存的内容（tar 打包要占用 / 卷同等大小的空间，据此调整 root-reserve-mb） ==="
-          du -sh .ccache staging_dir dl 2>/dev/null || true
+          du -sh .ccache staging_dir 2>/dev/null || true
           echo "=== / 卷（缓存打包临时目录所在，必须有余量）与构建卷（工作区） ==="
           df -h / "/home/runner/work/_temp" "$GITHUB_WORKSPACE" 2>/dev/null || df -h
 
