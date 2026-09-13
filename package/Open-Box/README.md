@@ -3,7 +3,7 @@
   <img src="docs/pic/logo.png" alt="Open-Box" height="72">
 </picture>
 
-Open-Box 是面向 OpenWrt 路由器的一体化透明代理面板。安装包内置 Open-Box、sing-box 内核、Node 运行时以及 GeoSite / GeoIP 数据，安装后通过浏览器完成订阅、节点、分流、DNS 和防火墙设置，不需要手写配置文件。
+OpenWrt 上的一体化透明代理：安装包内置 Open-Box、sing-box 内核、Node 运行时以及完整 GeoSite / GeoIP 数据，安装后通过浏览器完成订阅、节点、分流、DNS 和防火墙设置，不需要手写配置文件。
 
 ## 使用说明视频
 
@@ -41,7 +41,7 @@ Open-Box 是面向 OpenWrt 路由器的一体化透明代理面板。安装包�
 
 ![目标分流](docs/pic/settings-policies.webp)
 
-**后端设置**：IPv6、测速地址、内核服务和组件升级都在这里管理。
+**后端设置**：IPv6、测速地址、内核服务和统一组件升级都在这里管理。自动测速会遵守每个策略配置的检测间隔；同一节点在间隔内复用已有结果，超时按策略立即重试或切换。
 
 ![后端设置](docs/pic/settings-backend.webp)
 
@@ -56,7 +56,7 @@ Open-Box 是面向 OpenWrt 路由器的一体化透明代理面板。安装包�
 - **共享网络**：可以把内核入站开放给局域网中的其它设备作为代理使用。
 - **流量统计**：按终端设备、节点和访问目标查看每日流量。
 - **内置规则数据库**：完整安装包自带 GeoSite / GeoIP 数据，首次安装和启动无需单独下载规则数据库。
-- **组件升级**：Open-Box 程序、sing-box 内核和 GeoSite / GeoIP 数据统一从本仓库 Release 获取。升级前会校验本地版本和文件完整性，版本一致且文件正常时不会重复下载。
+- **组件升级**：Open-Box 程序、sing-box 内核和 GeoSite / GeoIP 数据统一从本仓库 Release 获取。升级前会校验本地版本和文件完整性，版本一致且文件正常时不会重复下载；完整安装包始终包含三类组件，新安装无需另行下载规则数据库。
 - **LuCI 兜底页**：面板打不开时，可以从路由器的“服务 → Open-Box”页面启停服务、恢复直连或卸载。
 
 ## 下载
@@ -76,11 +76,13 @@ SSH 以 root 登录 OpenWrt 路由器后执行：
 curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/install.sh | sh
 ```
 
-GitHub 访问不畅时，可使用安装脚本支持的镜像参数：
+GitHub 访问不畅时，需要先通过可访问的 raw 镜像获取安装脚本，再让脚本使用镜像下载发布包：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/install.sh | sh -s -- --mirror
+curl -fsSL https://gh-proxy.com/raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/install.sh | sh -s -- --mirror
 ```
+
+`--mirror` 只控制安装包下载；如果最外层的 `raw.githubusercontent.com` 本身无法访问，直接在原地址后追加 `--mirror` 仍然无法取得脚本。
 
 安装要求：OpenWrt、x86_64 或 aarch64、至少 512MB 存储空间和 512MB 内存。安装完成后，用浏览器打开脚本提示的 `http://<路由器局域网 IP>:2026` 地址，首次访问设置管理密码。
 
@@ -93,6 +95,22 @@ curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/up
 ```
 
 升级会保留订阅、规则和面板密码，并校验 Open-Box、sing-box、GeoSite / GeoIP 组件。相同且完整的组件直接复用，只有变化、缺失或损坏的组件才会从本仓库 Release 下载。
+
+### 回退到上一个版本
+
+如果升级后面板或内核异常,可以用下面的命令回退:脚本会到 GitHub 查当前版本之前最近的正式 Release,重新下载那一版的完整安装包装回去。路由器本机不保留旧版备份,所以回退需要能访问 GitHub(或镜像);订阅、规则、面板密码等数据目录不会被动。
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/update.sh | sh -s -- --rollback --direct
+```
+
+GitHub 访问不畅时，使用代理执行：
+
+```sh
+curl -fsSL https://gh-proxy.com/raw.githubusercontent.com/liandu2024/Open-Box/main/scripts/update.sh | sh -s -- --rollback --mirror https://gh-proxy.com
+```
+
+两条命令都会自动识别路由器架构,下载上一个版本的完整安装包,先校验 SHA256,再替换当前文件;校验或替换失败会保留现有安装。--mirror 只影响安装包下载,查询 Release 列表的 GitHub API 会先直连、直连不通再经镜像。
 
 ## 卸载
 
