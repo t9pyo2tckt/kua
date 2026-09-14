@@ -124,7 +124,7 @@ if [[ "${REPO_NAME}" == "immortalwrt" ]]; then
 # 这里写入 immortalwrt 仓库特有的配置内容
 # /etc/config/network
 #uci set network.lan.gateway='192.168.9.1' # 网关
-uci add_list network.lan.dns='${OP_IP}' # DNS(多个DNS要用空格分开)
+uci add_list network.lan.dns='223.5.5.5' # DNS(多个DNS要用空格分开)
 uci del network.lan.ip6assign # IPv6 前缀分配长度
 
 # 添加wan口拨号信息
@@ -150,7 +150,7 @@ uci del dhcp.lan.ra # RA 服务
 # DHCP/DNS
 #uci del dhcp.@dnsmasq[0].authoritative # 唯一授权
 #uci del dhcp.@dnsmasq[0].dns_redirect # DNS 重定向
-uci set dhcp.@dnsmasq[0].port='1166' # DNS端口1166
+#uci set dhcp.@dnsmasq[0].port='1166' # DNS端口1166
 uci add_list dhcp.lan.dhcp_option='6,${OP_IP}'
 uci set dhcp.@dnsmasq[0].sequential_ip='1'
 
