@@ -12,8 +12,6 @@ CONFIG_PACKAGE_luci-app-autoupdate=y
 CONFIG_PACKAGE_luci-app-harbor-file=y
 CONFIG_PACKAGE_luci-app-ttyd=y
 
+
+CONFIG_PACKAGE_open-box=y
 CONFIG_PACKAGE_luci-app-openbox=y
-
-CONFIG_PACKAGE_luci-theme-bootstrap=m
-
-CONFIG_PACKAGE_luci-app-package-manager is not set
