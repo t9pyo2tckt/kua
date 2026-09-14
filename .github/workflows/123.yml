@@ -40,7 +40,7 @@ on:
         type: boolean
       MERGE_RULES:
         description: '合并广告规则并发布 gh-pages'
-        default: 'true'
+        default: 'false'
         type: boolean
 
 run-name: "矩阵编译固件 - 多设备并行"
